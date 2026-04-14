@@ -4,8 +4,16 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain.tools import tool
 from src.retriever import Retriever
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
+api_key = os.getenv("GOOGLE_API_KEY")
+
+shared_llm = ChatGoogleGenerativeAI(
+    model="gemini-3-flash-preview",
+    temperature=0,
+    google_api_key=api_key
+)
 
 @tool
 def ner_tool(text: str):
@@ -14,7 +22,6 @@ def ner_tool(text: str):
     according to the CyberTeam framework for threat identification.
     """
     # Sử dụng Gemini Flash để xử lý nhanh các tác vụ trích xuất thực thể
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
     
     # 1. System Prompt
     system_prompt = (
@@ -41,7 +48,7 @@ def ner_tool(text: str):
     ])
     
     # Sử dụng JsonOutputParser để đảm bảo đầu ra là JSON sạch, không lẫn text thừa
-    chain = prompt | llm | JsonOutputParser()
+    chain = prompt | shared_llm | JsonOutputParser()
     
     try:
         return chain.invoke({"text": text})
@@ -54,8 +61,6 @@ def rex_tool(text: str):
     Trích xuất các chỉ dấu đe dọa tiêu chuẩn (IP, Hash, Domain, Timestamp) 
     bằng cơ chế khớp mẫu định sẵn (Regex Pattern Matching) của CyberTeam.
     """
-    # Sử dụng Flash để parsing cực nhanh và chính xác
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
     
     # System Prompt: Bê nguyên xi vai trò trợ lý parsing
     system_prompt = (
@@ -79,7 +84,7 @@ def rex_tool(text: str):
         ("human", instructions)
     ])
     
-    chain = prompt | llm | JsonOutputParser()
+    chain = prompt | shared_llm | JsonOutputParser()
     return chain.invoke({"text": text})
 
 @tool
@@ -88,8 +93,6 @@ def rag_tool(topic: str):
     Truy xuất tri thức an ninh mạng nâng cao. 
     Sử dụng LLM để sinh truy vấn có cấu trúc trước khi tìm kiếm trong Vector DB (MITRE/NVD).
     """
-    # 1. Khởi tạo LLM nhẹ sinh query
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
     
     # System Prompt 
     system_prompt = "You are a cybersecurity assistant. Formulate a concise search query to retrieve current information about the topic specified below."
@@ -107,7 +110,7 @@ def rag_tool(topic: str):
     ])
     
     # Bước A: LLM sinh ra Query (Structured Query for Retrieval)
-    query_chain = prompt | llm
+    query_chain = prompt | shared_llm
     structured_query = query_chain.invoke({"topic": topic}).content
     print(f"    [RAG] CyberTeam Query: {structured_query}")
     
@@ -128,8 +131,6 @@ def sum_tool(text: str):
     Tóm tắt báo cáo đe dọa hoặc dữ liệu log dài, giữ lại các chi tiết quan trọng 
     như TTPs, IOCs và dòng thời gian sự cố theo khung CyberTeam.
     """
-    # Sử dụng Gemini Flash để tóm tắt nhanh và chính xác các báo cáo dài
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
 
     # System Prompt: Bê nguyên xi vai trò trợ lý phân tích an ninh mạng
     system_prompt = (
@@ -152,7 +153,7 @@ def sum_tool(text: str):
 
     # Output yêu cầu trả về là một đoạn văn bản (plain-text summary paragraph)
     # Ta sử dụng trực tiếp kết quả content từ LLM
-    return llm.invoke(prompt.format(text=text)).content
+    return shared_llm.invoke(prompt.format(text=text)).content
 
 @tool
 def sim_tool(phrase1: str, phrase2: str):
@@ -160,7 +161,6 @@ def sim_tool(phrase1: str, phrase2: str):
     So khớp độ tương đồng văn bản dựa trên ngữ cảnh địa lý và văn hóa 
     để xác định xem hai chỉ dấu có trỏ về cùng một nguồn gốc đe dọa hay không.
     """
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
 
     # System Prompt
     system_prompt = (
@@ -188,7 +188,7 @@ def sim_tool(phrase1: str, phrase2: str):
     ])
 
     # Sử dụng JsonOutputParser để lấy đúng cấu trúc: match, confidence, justification
-    chain = prompt | llm | JsonOutputParser()
+    chain = prompt | shared_llm | JsonOutputParser()
     
     return chain.invoke({"phrase1": phrase1, "phrase2": phrase2})
 
@@ -198,8 +198,6 @@ def map_tool(text: str):
     Xây dựng bản đồ tri thức bằng cách trích xuất các bộ ba quan hệ (Subject-Predicate-Object) 
     từ báo cáo đe dọa để làm rõ mối liên hệ giữa các thực thể.
     """
-    # Sử dụng Gemini Flash để xử lý việc trích xuất quan hệ một cách linh hoạt
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
 
     # System Prompt: Trợ lý xây dựng đồ thị tri thức an ninh mạng
     system_prompt = (
@@ -222,7 +220,7 @@ def map_tool(text: str):
     ])
 
     # Trả về danh sách JSON chứa các triples và điểm tin cậy
-    chain = prompt | llm | JsonOutputParser()
+    chain = prompt | shared_llm | JsonOutputParser()
     
     return chain.invoke({"text": text})
 
@@ -232,7 +230,6 @@ def spa_tool(text: str):
     Định vị và trích xuất đoạn văn bản (text span) mô tả trực tiếp kỹ thuật 
     mà kẻ tấn công sử dụng để xâm nhập hệ thống (ví dụ: phishing, lateral movement).
     """
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
     
     # System Prompt: Vai trò trợ lý định vị vùng văn bản
     system_prompt = (
@@ -253,7 +250,7 @@ def spa_tool(text: str):
     ])
     
     # Output: Trả về đoạn văn bản thuần (plain text)
-    return llm.invoke(prompt.format(text=text)).content
+    return shared_llm.invoke(prompt.format(text=text)).content
 
 @tool
 def cls_tool(text: str, category: str):
@@ -261,7 +258,6 @@ def cls_tool(text: str, category: str):
     Phân loại các đầu vào văn bản liên quan đến an ninh mạng (cảnh báo, log, lỗ hổng) 
     vào các nhãn định sẵn như loại tấn công, mức độ phức tạp, hoặc mức độ ảnh hưởng.
     """
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
     
     # Xây dựng System Prompt dựa trên mô tả B.8
     system_prompt = (
@@ -286,7 +282,7 @@ def cls_tool(text: str, category: str):
         ("human", instructions)
     ])
     
-    chain = prompt | llm | JsonOutputParser()
+    chain = prompt | shared_llm | JsonOutputParser()
     return chain.invoke({"text": text, "category": category})
 
 @tool
@@ -295,8 +291,6 @@ def math_tool(vulnerability_description: str, metrics_values: str):
     Tính toán điểm số mức độ nghiêm trọng (CVSS v3.1 Base Score) dựa trên 
     mô tả lỗ hổng và các chỉ số kỹ thuật (Confidentiality, Integrity, Availability, v.v.).
     """
-    # Sử dụng Gemini Flash để thực hiện các phép tính và giải trình logic
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-pro", temperature=0)
 
     # System Prompt: Vai trò trợ lý tính điểm bảo mật
     system_prompt = (
@@ -319,7 +313,7 @@ def math_tool(vulnerability_description: str, metrics_values: str):
     ])
 
     # Output: Trả về điểm số (float 1 chữ số thập phân) và giải thích từng bước
-    return llm.invoke(prompt.format(
+    return shared_llm.invoke(prompt.format(
         description=vulnerability_description, 
         metrics=metrics_values
     )).content
