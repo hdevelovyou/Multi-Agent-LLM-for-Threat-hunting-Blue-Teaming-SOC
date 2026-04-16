@@ -10,7 +10,7 @@ load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 
 shared_llm = ChatGoogleGenerativeAI(
-    model="gemini-3-flash-preview",
+    model="models/gemma-4-31b-it",
     temperature=0,
     google_api_key=api_key
 )

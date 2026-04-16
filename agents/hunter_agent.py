@@ -24,7 +24,7 @@ class HunterAgent:
         
         # Bước B: Khởi tạo não bộ và BIND TOOLS trực tiếp
         self.llm = ChatGoogleGenerativeAI(
-            model="models/gemini-3-flash-preview", 
+            model="models/gemma-4-31b-it", 
             temperature=0,
             google_api_key=api_key
         ).bind_tools(self.tools)
@@ -116,6 +116,11 @@ class HunterAgent:
                 
             # Lưu câu trả lời cuối cùng của AI vào history cho task tiếp theo
             self.history.append(ai_msg)
+
+            print(f"\n    [🔍 TASK RESULT - {task['id']}]")
+            print(f"    {ai_msg.content}")
+            print("    " + "="*30)
+
             print(f"    [V] Task {task['id']} hoàn tất.")
 
         return self.history

@@ -9,9 +9,8 @@ api_key = os.getenv("GOOGLE_API_KEY")
 
 class CoordinatorAgent:
     def __init__(self):
-        # Sử dụng Pro để lập kế hoạch cho chuẩn
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
+            model="models/gemma-4-31b-it",
             temperature=0,
             google_api_key=api_key
         )
