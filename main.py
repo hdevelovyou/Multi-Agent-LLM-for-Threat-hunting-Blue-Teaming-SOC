@@ -1,17 +1,28 @@
 import json
+import os
+from datetime import datetime
 from agents.coordinator_agent import CoordinatorAgent
 from agents.hunter_agent import HunterAgent
 from agents.verifier_agent import VerifierAgent
 from agents.analyst_agent import AnalystAgent
 from agents.reporter_agent import ReporterAgent
+from evaluation.evaluator import SOCEvaluator
 
-def run_cyber_defense_system(log_data):
+def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
     # 1. Khởi tạo các "nhân sự"
     coordinator = CoordinatorAgent()
     hunter = HunterAgent()
     verifier = VerifierAgent()
     analyst = AnalystAgent()
     reporter = ReporterAgent()
+    evaluator = SOCEvaluator()
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    scenario_id = f"{scenario_name}_{timestamp}"
+
+    # Pre-pipeline parse
+    print("\n[Evaluator] Đang dán nhãn định danh log gốc...")
+    pre_entities = evaluator._extract_entities(log_data, source_type="log")
 
     final_results = []
 
@@ -71,7 +82,7 @@ def run_cyber_defense_system(log_data):
     # 6. Analyst sẽ đọc file soc_hunt_results.json để phân tích chuyên sâu
     print("\n[Analyst] Đang bắt đầu giai đoạn phân tích chuyên sâu...")
     results_str = json.dumps(final_results, indent=4, ensure_ascii=False)
-    deep_analysis = analyst.analyze_incident(results_str, sample_log)
+    deep_analysis = analyst.analyze_incident(results_str, log_data)
 
     #7. Viết báo cáo kỹ thuật
     final_report = reporter.generate_final_report(deep_analysis)
@@ -81,10 +92,38 @@ def run_cyber_defense_system(log_data):
         else:
             report_str = str(final_report)
         f.write(report_str)
+    
+    # post-pipeline parse
+    print("[Evaluator] Đang dán nhãn báo cáo cuối cùng...")
+    post_entities = evaluator._extract_entities(final_report, source_type="report")
+
+    # Layer 1 evaluation
+    results_t1 = evaluator.compare_entities(pre_entities, post_entities)
+
+    # Layer 2 evaluation
+    result_t2 = evaluator.validate_enrichment(log_data, results_t1['enrichment_list'])
+
+    final_eval_data = {
+        "scenario_id": scenario_id,
+        "metadata": {
+            "test_date": timestamp,
+            "log_preview": log_data[:50] + "..."
+        },
+        "layer_1_recall": results_t1['layer_1_recall'],
+        "layer_2_audit": result_t2
+    }
+    # --- LƯU FILE TẠI MAIN ---
+    os.makedirs("eval_reports", exist_ok=True)
+    file_path = f"eval_reports/eval_{scenario_id}.json"
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(final_eval_data, f, indent=4, ensure_ascii=False)
+    
+    print(f"\n✅ Đã chốt sổ kịch bản: {scenario_id}")
+    print(f"📊 Kết quả kiểm định lưu tại: {file_path}")
 
     return final_report
 
 if __name__ == "__main__":
     # Log mẫu để test
-    sample_log = "Detect suspicious process 'mimikatz.exe' on Server-01"
-    run_cyber_defense_system(sample_log)
+    sample_log_mimikatz = "Detect suspicious process 'mimikatz.exe' on Server-01"
+    run_cyber_defense_system(sample_log_mimikatz, scenario_name="MIMIKATZ_TEST_SERVER_01")
