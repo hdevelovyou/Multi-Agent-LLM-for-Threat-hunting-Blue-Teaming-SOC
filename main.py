@@ -2,12 +2,16 @@ import json
 from agents.coordinator_agent import CoordinatorAgent
 from agents.hunter_agent import HunterAgent
 from agents.verifier_agent import VerifierAgent
+from agents.analyst_agent import AnalystAgent
+from agents.reporter_agent import ReporterAgent
 
 def run_cyber_defense_system(log_data):
     # 1. Khởi tạo các "nhân sự"
     coordinator = CoordinatorAgent()
     hunter = HunterAgent()
     verifier = VerifierAgent()
+    analyst = AnalystAgent()
+    reporter = ReporterAgent()
 
     final_results = []
 
@@ -61,9 +65,24 @@ def run_cyber_defense_system(log_data):
     with open("soc_hunt_results.json", "w", encoding="utf-8") as f:
         json.dump(final_results, f, ensure_ascii=False, indent=4)
     
-    print(f"\n--- TOÀN BỘ QUY TRÌNH HOÀN TẤT ---")
+    print(f"\n--- THREAT HUNTING HOÀN TẤT ---")
     print(f"Kết quả đã được lưu tại soc_hunt_results.json")
-    return final_results
+
+    # 6. Analyst sẽ đọc file soc_hunt_results.json để phân tích chuyên sâu
+    print("\n[Analyst] Đang bắt đầu giai đoạn phân tích chuyên sâu...")
+    results_str = json.dumps(final_results, indent=4, ensure_ascii=False)
+    deep_analysis = analyst.analyze_incident(results_str, sample_log)
+
+    #7. Viết báo cáo kỹ thuật
+    final_report = reporter.generate_final_report(deep_analysis)
+    with open("FINAL_REPORT_SOC.md", "w", encoding="utf-8") as f:
+        if isinstance(final_report, list):
+            report_str = "\n".join([str(x) for x in final_report])
+        else:
+            report_str = str(final_report)
+        f.write(report_str)
+
+    return final_report
 
 if __name__ == "__main__":
     # Log mẫu để test

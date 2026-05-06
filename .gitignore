@@ -4,3 +4,5 @@
 __pycache__/
 model_check.py
 unit_tests.py
+soc_hunt_result.json
+FINAL_REPORT_SOC.md
