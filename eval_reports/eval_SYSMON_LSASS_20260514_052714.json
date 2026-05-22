@@ -1,0 +1,49 @@
+{
+    "scenario_id": "SYSMON_LSASS_20260514_052714",
+    "metadata": {
+        "test_date": "20260514_052714",
+        "latency_seconds": 1422.31,
+        "gemini_tokens": {
+            "input": 121262,
+            "output": 25182
+        },
+        "gpt4o_tokens": {
+            "input": 3861,
+            "output": 527
+        }
+    },
+    "layer_1_recall": "66.67%",
+    "layer_2_audit": {
+        "enrichment_quality_score": 4,
+        "reasoning_summary": "Chỉ có một thực thể bổ sung là hợp lý dựa trên log gốc và tri thức MITRE ATT&CK. Các thực thể khác không có cơ sở kỹ thuật rõ ràng hoặc không khớp với hành vi được ghi nhận.",
+        "details": [
+            {
+                "entity": {
+                    "type": "techniques",
+                    "value": "T1003.001"
+                },
+                "status": "VALID",
+                "explanation": "T1003.001 (LSASS Memory) là kỹ thuật hợp lý vì log ghi nhận hành vi truy cập bộ nhớ của tiến trình lsass.exe, điều này thường liên quan đến việc trích xuất thông tin xác thực từ LSASS."
+            },
+            {
+                "entity": {
+                    "type": "techniques",
+                    "value": "T1036"
+                },
+                "status": "INVALID",
+                "explanation": "T1036 (Masquerading) không có cơ sở trong log. Không có thông tin nào cho thấy rằng tiến trình sys_update_x64.exe đang giả mạo một tiến trình hợp pháp khác."
+            },
+            {
+                "entity": {
+                    "type": "techniques",
+                    "value": "T1078"
+                },
+                "status": "INVALID",
+                "explanation": "T1078 (Valid Accounts) không có cơ sở trong log. Log chỉ ra rằng tài khoản svc_backup thực hiện hành vi, nhưng không có thông tin nào cho thấy tài khoản này bị lạm dụng hoặc sử dụng trái phép."
+            }
+        ],
+        "total_entities_added": 3,
+        "valid_count": 1,
+        "invalid_count": 2
+    }
+}

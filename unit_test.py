@@ -9,7 +9,17 @@ def test_independent_evaluator(scenario_name="MIMIKATZ_TEST"):
     evaluator = SOCEvaluator()
 
     # 2. Dữ liệu đầu vào
-    raw_log = "Detect suspicious process 'mimikatz.exe' on Server-01."
+    raw_log = (
+            "[2026-05-13 08:17:55] [CRITICAL] [IDS-Snort]\n"
+            "Sensor=DMZ-IDS-01\n"
+            "Signature=\"ET EXPLOIT Apache Struts RCE Attempt\"\n"
+            "SourceIP=45.227.255.201\n"
+            "DestinationIP=10.10.20.8\n"
+            "DestinationPort=443\n"
+            "Protocol=HTTPS\n"
+            "Priority=1\n"
+            "Classification=Web Application Attack"
+        )
     
     report_path = "FINAL_REPORT_SOC.md"
     if not os.path.exists(report_path):

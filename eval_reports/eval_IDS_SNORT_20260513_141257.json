@@ -1,0 +1,65 @@
+{
+    "scenario_id": "IDS_SNORT_20260513_141257",
+    "metadata": {
+        "test_date": "20260513_141257",
+        "log_preview": "[2026-05-13 08:17:55] [CRITICAL] [IDS-Snort]\nSenso..."
+    },
+    "layer_1_recall": "50.00%",
+    "layer_2_audit": {
+        "enrichment_quality_score": 4,
+        "reasoning_summary": "Một số thực thể bổ sung có thể hợp lý dựa trên bản chất của cuộc tấn công Apache Struts RCE, nhưng một số thực thể khác không có cơ sở rõ ràng từ log hoặc không khớp với kỹ thuật MITRE ATT&CK.",
+        "details": [
+            {
+                "entity": {
+                    "type": "processes",
+                    "value": "java.exe"
+                },
+                "status": "VALID",
+                "explanation": "Apache Struts thường chạy trên nền tảng Java, do đó việc xuất hiện 'java.exe' có thể là hệ quả của một cuộc tấn công RCE thành công."
+            },
+            {
+                "entity": {
+                    "type": "processes",
+                    "value": "/bin/sh"
+                },
+                "status": "VALID",
+                "explanation": "Trong trường hợp khai thác RCE, việc thực thi shell như '/bin/sh' là hợp lý, đặc biệt trên hệ thống Unix/Linux."
+            },
+            {
+                "entity": {
+                    "type": "processes",
+                    "value": "cmd.exe"
+                },
+                "status": "INVALID",
+                "explanation": "Log không cung cấp thông tin nào về hệ điều hành Windows, do đó việc suy diễn 'cmd.exe' là không có cơ sở."
+            },
+            {
+                "entity": {
+                    "type": "files",
+                    "value": ".php"
+                },
+                "status": "INVALID",
+                "explanation": "Không có thông tin nào trong log hoặc bản chất của Apache Struts RCE cho thấy việc tạo ra hoặc liên quan đến file '.php'."
+            },
+            {
+                "entity": {
+                    "type": "files",
+                    "value": ".jsp"
+                },
+                "status": "VALID",
+                "explanation": "Apache Struts thường sử dụng JSP (JavaServer Pages), do đó việc liên quan đến file '.jsp' là hợp lý trong bối cảnh này."
+            },
+            {
+                "entity": {
+                    "type": "techniques",
+                    "value": "T1190"
+                },
+                "status": "VALID",
+                "explanation": "T1190 là kỹ thuật 'Exploit Public-Facing Application', phù hợp với bản chất của cuộc tấn công Apache Struts RCE."
+            }
+        ],
+        "total_entities_added": 6,
+        "valid_count": 4,
+        "invalid_count": 2
+    }
+}
