@@ -1,33 +1,49 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
 import os
 
 from dotenv import load_dotenv
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
+
 
 class AnalystAgent:
     def __init__(self):
         self.llm = ChatGoogleGenerativeAI(
-            model="models/gemma-4-31b-it", 
+            model="models/gemma-4-31b-it",
             google_api_key=api_key,
-            temperature=0
-            )
+            temperature=0,
+        )
 
-    def analyze_incident(self, hunt_results, raw_log):
+    def analyze_incident(self, hunt_results, raw_log, entity_context=None):
         system_prompt = (
-            "Bạn là Chuyên gia Điều tra Số (DFIR). Nhiệm vụ của bạn là xâu chuỗi các bằng chứng "
-            "từ Hunter Agent để xác định kịch bản tấn công theo mô hình MITRE ATT&CK."
+            "You are a senior DFIR analyst in a SOC blue-team threat hunting workflow. "
+            "Perform zero-shot incident reconstruction from the supplied evidence only. "
+            "Do not invent facts. Preserve every IOC, hash, host, user, process, file, "
+            "and MITRE ATT&CK technique ID that is supported by the logs or hunter findings."
         )
-        
+
         user_prompt = (
-            "Dữ liệu điều tra:\n{results}\n\nLog gốc: {log}\n\n"
-            "YÊU CẦU:\n"
-            "1. Xác định Kill Chain: Kẻ tấn công đã làm gì, theo thứ tự nào?\n"
-            "2. Đánh giá mức độ nghiêm trọng (Critical/High/Medium/Low).\n"
-            "3. Graph dữ liệu: Mô tả mối quan hệ giữa các thực thể (IP -> Process -> File) dưới dạng Mermaid code."
+            "Verified Hunter Findings:\n{results}\n\n"
+            "Deterministic Entity Context extracted from the raw log:\n{entities}\n\n"
+            "Raw Log:\n{log}\n\n"
+            "Requirements:\n"
+            "1. Reconstruct the kill chain chronologically.\n"
+            "2. Map each major behavior to MITRE ATT&CK IDs in Txxxx/Txxxx.xxx format.\n"
+            "3. Preserve all observable IOCs, especially MD5/SHA1/SHA256 hashes.\n"
+            "4. Rate severity as Critical/High/Medium/Low and justify it.\n"
+            "5. Include a Mermaid relationship graph description linking Host -> User -> Process -> File -> Network IOC.\n"
+            "6. If attribution to Cobalt Strike or LockBit is inferred, state the evidence and confidence."
         )
-        
-        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", user_prompt)])
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", user_prompt),
+        ])
         chain = prompt | self.llm
-        return chain.invoke({"results": hunt_results, "log": raw_log}).content
+        return chain.invoke({
+            "results": hunt_results,
+            "entities": entity_context or "{}",
+            "log": raw_log,
+        }).content

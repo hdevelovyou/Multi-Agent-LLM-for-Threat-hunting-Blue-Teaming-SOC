@@ -1,178 +1,257 @@
-# evaluator.py
 import json
 import os
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from langchain_community.callbacks import get_openai_callback # <-- THÊM DÒNG NÀY
+import re
+
 from dotenv import load_dotenv
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
-
 api_key = os.getenv("OPENAI_API_KEY")
+
 
 class SOCEvaluator:
     def __init__(self):
         self.llm = ChatOpenAI(
-            model="gpt-4o", 
+            model="gpt-4o",
             api_key=api_key,
-            temperature=0
+            temperature=0,
         )
         self.parser = JsonOutputParser()
-        
-        # --- THÊM BIẾN LƯU TRỮ TOKEN & COST ---
         self.openai_input_tokens = 0
         self.openai_output_tokens = 0
 
     def _extract_entities(self, text, source_type="log"):
-        role_desc = "dòng log thô" if source_type == "log" else "báo cáo kỹ thuật SOC"
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "Mày là chuyên gia Entity Extraction trong lĩnh vực Cyber Security. "
-                f"Nhiệm vụ: Trích xuất TOÀN BỘ thực thể định danh từ {role_desc}."
-            )),
-            ("human", (
-                "Văn bản: {text}\n\n"
-                "Hãy trả về JSON format sau (nếu không có thì để list trống):\n"
-                "{{\n"
-                "  \"ips\": [], \"hosts\": [], \"users\": [], \"processes\": [], \"files\": [], \"techniques\": []\n"
-                "}}\n"
-                "CHÚ Ý: Chỉ trả về JSON, không giải thích."
-            ))
-        ])
-        
-        chain = prompt | self.llm | self.parser
-        
-        # --- BỌC CALLBACK ĐỂ ĐO TOKEN ---
-        with get_openai_callback() as cb:
-            result = chain.invoke({"text": text})
-            self.openai_input_tokens += cb.prompt_tokens
-            self.openai_output_tokens += cb.completion_tokens
+        """Rule-based entity extraction used for deterministic audit metrics."""
+        if isinstance(text, dict):
+            text = json.dumps(text)
+        elif isinstance(text, list):
+            text = "\n".join(str(item) for item in text)
+        else:
+            text = str(text)
 
-        return result
+        normalized_text = self._defang_to_plain(text)
+        entities = {
+            "ips": [],
+            "hosts": [],
+            "users": [],
+            "processes": [],
+            "files": [],
+            "techniques": [],
+            "hashes": [],
+        }
 
-    # ... (Giữ nguyên hàm compare_entities và _get_optimized_mitre_context) ...
+        ip_pattern = r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b"
+        entities["ips"] = sorted(set(re.findall(ip_pattern, normalized_text)))
+
+        tech_pattern = r"\bT\d{4}(?:\.\d{3})?\b"
+        entities["techniques"] = sorted(set(re.findall(tech_pattern, normalized_text)))
+
+        file_pattern = (
+            r"\b(?:[a-zA-Z]:\\[\\\w\.-]+)?\\?[\w\.-]+"
+            r"\.(?:exe|dll|bat|ps1|vbs|txt|bin|cab|js|sh|docx|pdf)\b"
+        )
+        found_files = sorted(set(re.findall(file_pattern, normalized_text, re.IGNORECASE)))
+        for file_name in found_files:
+            if file_name.lower().endswith(".exe"):
+                entities["processes"].append(file_name)
+            else:
+                entities["files"].append(file_name)
+
+        domain_pattern = (
+            r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
+            r"(?:com|net|org|info|biz|vn|io|ru|xyz)\b"
+        )
+        entities["hosts"] = sorted(set(re.findall(domain_pattern, normalized_text, re.IGNORECASE)))
+
+        user_pattern = r"\b[A-Za-z0-9_ -]+\\[A-Za-z0-9_-]+\b"
+        found_users = re.findall(user_pattern, normalized_text)
+        entities["users"] = sorted(set(
+            user for user in found_users
+            if not user.lower().endswith((".exe", ".dll", ".sys"))
+        ))
+
+        hash_pattern = r"\b(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})\b"
+        entities["hashes"] = sorted(set(re.findall(hash_pattern, normalized_text)))
+
+        return entities
+
     def compare_entities(self, pre_json, post_json):
-        # [Giữ nguyên code cũ của mày]
         metrics = {}
-        all_categories = ['ips', 'hosts', 'users', 'processes', 'files', 'techniques']
-        
-        total_original = 0
-        total_found = 0
+        all_categories = [
+            "ips",
+            "hosts",
+            "users",
+            "processes",
+            "files",
+            "techniques",
+            "hashes",
+        ]
+
+        total_g_log = 0
+        total_p_agent = 0
+        total_intersection = 0
         enrichment_entities = []
 
         for cat in all_categories:
-            orig_set = set(pre_json.get(cat, []))
-            final_set = set(post_json.get(cat, []))
-            
-            found = orig_set.intersection(final_set)
-            extras = final_set - orig_set
-            
-            for e in extras:
-                enrichment_entities.append({"type": cat, "value": e})
-                
-            total_original += len(orig_set)
-            total_found += len(found)
-            
+            g_log_set = set(pre_json.get(cat, []))
+            p_agent_set = set(post_json.get(cat, []))
+            intersection = g_log_set.intersection(p_agent_set)
+            extras = p_agent_set - g_log_set
+
+            for entity in extras:
+                enrichment_entities.append({"type": cat, "value": entity})
+
+            total_g_log += len(g_log_set)
+            total_p_agent += len(p_agent_set)
+            total_intersection += len(intersection)
+
             metrics[cat] = {
-                "needed": list(orig_set),
-                "found": list(found),
-                "missing": list(orig_set - final_set),
-                "extra_enrichment": list(extras)
+                "needed": sorted(g_log_set),
+                "found": sorted(intersection),
+                "missing": sorted(g_log_set - p_agent_set),
+                "extra_enrichment": sorted(extras),
             }
 
-        recall = (total_found / total_original * 100) if total_original > 0 else 100
-        
+        precision = (total_intersection / total_p_agent) if total_p_agent > 0 else 0.0
+        recall = (total_intersection / total_g_log) if total_g_log > 0 else 1.0
+        f1_score = (
+            2 * (precision * recall) / (precision + recall)
+            if precision + recall > 0
+            else 0.0
+        )
+
         return {
-            "layer_1_recall": f"{recall:.2f}%",
+            "layer_1_metrics": {
+                "precision": round(precision, 4),
+                "recall": round(recall, 4),
+                "f1_score": round(f1_score, 4),
+            },
             "enrichment_list": enrichment_entities,
-            "details": metrics
+            "details": metrics,
         }
 
-    def _get_optimized_mitre_context(self, enrichment_list, kb_filepath="mitre_attack_dataset.json"):
-        # [Giữ nguyên code cũ của mày]
-        if not os.path.exists(kb_filepath):
-            return "Không tìm thấy cơ sở dữ liệu MITRE (mitre_attack_dataset.json)."
+    def _flatten_to_strings(self, data_list):
+        result = []
+        for item in data_list:
+            if isinstance(item, dict):
+                result.extend(self._flatten_to_strings(item.values()))
+            elif isinstance(item, list) or isinstance(item, tuple):
+                result.extend(self._flatten_to_strings(item))
+            else:
+                result.append(str(item).strip())
+        return result
 
-        try:
-            with open(kb_filepath, "r", encoding="utf-8") as f:
-                full_kb = json.load(f)
-            
-            kb_dict = {item.get("technique_id"): item for item in full_kb if "technique_id" in item}
-            optimized_context = []
-            reported_techs = [e['value'] for e in enrichment_list if e['type'] == 'techniques']
-            
-            for tech_id in reported_techs:
-                if tech_id in kb_dict:
-                    raw_data = kb_dict[tech_id]
-                    pruned_data = {
-                        "technique_id": raw_data.get("technique_id"),
-                        "name": raw_data.get("name"),
-                        "tactic": raw_data.get("tactic"),
-                        "platforms": raw_data.get("platforms"),
-                        "data_sources": raw_data.get("data_sources"),
-                        "permissions_required": raw_data.get("permissions_required")
-                    }
-                    optimized_context.append(pruned_data)
-            
-            if not optimized_context:
-                return "Các kỹ thuật được báo cáo không tồn tại trong cơ sở dữ liệu MITRE."
-                
-            return json.dumps(optimized_context, ensure_ascii=False)
-            
-        except Exception as e:
-            return f"Lỗi khi đọc MITRE KB: {e}"
+    def _defang_to_plain(self, value):
+        return (
+            str(value)
+            .replace("[.]", ".")
+            .replace("(.)", ".")
+            .replace("hxxps://", "https://")
+            .replace("hxxp://", "http://")
+        )
 
-    def validate_enrichment(self, raw_log, enrichment_list):
-        if not enrichment_list:
-            return {"total_entities_added": 0, "enrichment_quality_score": 10.0, "details": []}
+    def _normalize_techniques(self, values):
+        techniques = set()
+        for value in self._flatten_to_strings(values):
+            for match in re.findall(r"\bT\d{4}(?:\.\d{3})?\b", value, re.IGNORECASE):
+                techniques.add(match.upper())
+        return techniques
 
-        mitre_context = self._get_optimized_mitre_context(enrichment_list)
+    def _normalize_iocs(self, values):
+        normalized = set()
+        ip_pattern = r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b"
+        domain_pattern = (
+            r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
+            r"(?:com|net|org|info|biz|vn|io|ru|xyz)\b"
+        )
+        file_pattern = r"\b[\w\.-]+\.(?:exe|dll|bat|ps1|vbs|txt|bin|cab|js|sh|docx|pdf)\b"
+        hash_pattern = r"\b(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})\b"
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "Mày là Senior SOC Auditor (DFIR Expert) cực kỳ khắt khe. Nhiệm vụ của mày là kiểm toán tính logic của các thực thể 'Enrichment'.\n\n"
-                "QUY TẮC ĐÁNH GIÁ NGHIÊM NGẶT:\n"
-                "1. [VALID]: Thực thể phải là hệ quả kỹ thuật tất yếu của hành vi trong log HOẶC khớp chính xác với tri thức MITRE ATT&CK được cung cấp.\n"
-                "2. [INVALID]: Thực thể là sự suy diễn vô căn cứ (ví dụ: tự thêm 'Workstation' hoặc 'Local Admin' khi log chỉ đề cập đến 'Server').\n"
-                "3. [INVALID]: Ánh xạ sai kỹ thuật (ví dụ: gán kỹ thuật khai thác lỗ hổng cho công cụ đánh cắp thông tin xác thực).\n\n"
-                "Mày PHẢI giải thích rõ logic kỹ thuật tại sao mày đánh giá như vậy."
-            )),
-            ("human", (
-                "LOG GỐC: {log}\n"
-                "THỰC THỂ BỔ SUNG TỪ ANALYST: {enrichment}\n\n"
-                "CƠ SỞ TRÍ THỨC MITRE ĐỐI CHIẾU:\n{mitre_data}\n\n"
-                "TRẢ VỀ JSON FORMAT:\n"
-                "{{\n"
-                "  \"enrichment_quality_score\": <0-10>,\n"
-                "  \"reasoning_summary\": \"Tổng quan về chất lượng lập luận của Agent\",\n"
-                "  \"details\": [\n"
-                "    {{\"entity\": \"...\", \"status\": \"VALID/INVALID\", \"explanation\": \"Lý do chi tiết dựa trên Log và MITRE...\"}}\n"
-                "  ]\n"
-                "}}"
-            ))
-        ])
+        for raw_value in self._flatten_to_strings(values):
+            value = self._defang_to_plain(raw_value).strip().lower()
+            if not value:
+                continue
 
-        try:
-            chain = prompt | self.llm | self.parser
-            
-            # --- BỌC CALLBACK ĐỂ ĐO TOKEN ---
-            with get_openai_callback() as cb:
-                result = chain.invoke({
-                    "log": raw_log, 
-                    "enrichment": json.dumps(enrichment_list),
-                    "mitre_data": mitre_context
-                })
-                self.openai_input_tokens += cb.prompt_tokens
-                self.openai_output_tokens += cb.completion_tokens
+            extracted = set()
+            extracted.update(match.lower() for match in re.findall(ip_pattern, value))
+            extracted.update(match.lower() for match in re.findall(domain_pattern, value))
+            extracted.update(match.lower() for match in re.findall(file_pattern, value, re.IGNORECASE))
+            extracted.update(match.lower() for match in re.findall(hash_pattern, value))
 
-            valid_count = sum(1 for item in result['details'] if item['status'] == 'VALID')
-            result['total_entities_added'] = len(enrichment_list)
-            result['valid_count'] = valid_count
-            result['invalid_count'] = len(enrichment_list) - valid_count
-            
-            return result
-        except Exception as e:
-            print(f"❌ Lỗi Layer 2: {e}")
-            return None
+            if extracted:
+                normalized.update(extracted)
+            else:
+                normalized.add(value)
+
+        return normalized
+
+    def _set_metrics(self, expected, found):
+        intersection = expected.intersection(found)
+        union = expected.union(found)
+        precision = len(intersection) / len(found) if found else 0.0
+        recall = len(intersection) / len(expected) if expected else 1.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if precision + recall > 0
+            else 0.0
+        )
+        jaccard = len(intersection) / len(union) if union else 0.0
+        return {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "jaccard": jaccard,
+            "matched": intersection,
+        }
+
+    def calculate_layer_2_jaccard(self, ground_truth, ma_entities, w_i=0.7, w_j=0.3):
+        t_expert = self._normalize_techniques(ground_truth.get("T_expert", []))
+
+        i_expert_dict = ground_truth.get("I_expert", {})
+        i_expert_raw = (
+            i_expert_dict.get("atomic", [])
+            + i_expert_dict.get("computed", [])
+        )
+        i_expert = self._normalize_iocs(i_expert_raw)
+
+        t_ma = self._normalize_techniques(ma_entities.get("techniques", []))
+
+        ma_ioc_values = []
+        for cat in ["ips", "hosts", "users", "processes", "files", "hashes"]:
+            ma_ioc_values.extend(ma_entities.get(cat, []))
+        i_ma = self._normalize_iocs(ma_ioc_values)
+
+        t_metrics = self._set_metrics(t_expert, t_ma)
+        i_metrics = self._set_metrics(i_expert, i_ma)
+
+        score_l2 = (w_i * t_metrics["f1"]) + (w_j * i_metrics["f1"])
+        jaccard_l2 = (w_i * t_metrics["jaccard"]) + (w_j * i_metrics["jaccard"])
+        score_10 = round(score_l2 * 10, 2)
+
+        return {
+            "enrichment_quality_score": score_10,
+            "weighted_f1_score": round(score_l2, 4),
+            "weighted_jaccard_score": round(jaccard_l2, 4),
+            "jaccard_ttps": round(t_metrics["jaccard"], 4),
+            "jaccard_iocs": round(i_metrics["jaccard"], 4),
+            "f1_ttps": round(t_metrics["f1"], 4),
+            "f1_iocs": round(i_metrics["f1"], 4),
+            "precision_ttps": round(t_metrics["precision"], 4),
+            "precision_iocs": round(i_metrics["precision"], 4),
+            "recall_ttps": round(t_metrics["recall"], 4),
+            "recall_iocs": round(i_metrics["recall"], 4),
+            "weights_used": {"w_i (TTPs)": w_i, "w_j (IOCs)": w_j},
+            "details": {
+                "TTPs": {
+                    "expert_expected": sorted(t_expert),
+                    "agent_found": sorted(t_ma),
+                    "matched": sorted(t_metrics["matched"]),
+                },
+                "IOCs": {
+                    "expert_expected": sorted(i_expert),
+                    "agent_found": sorted(i_ma),
+                    "matched": sorted(i_metrics["matched"]),
+                },
+            },
+        }

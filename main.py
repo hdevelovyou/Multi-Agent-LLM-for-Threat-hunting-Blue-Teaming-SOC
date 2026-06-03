@@ -3,11 +3,8 @@ import os
 import time
 from datetime import datetime
 
-# Import LangChain
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.runnables import Runnable
+from langchain_community.callbacks.manager import get_openai_callback
 
-# Import Agents
 from agents.coordinator_agent import CoordinatorAgent
 from agents.hunter_agent import HunterAgent
 from agents.verifier_agent import VerifierAgent
@@ -15,32 +12,10 @@ from agents.analyst_agent import AnalystAgent
 from agents.reporter_agent import ReporterAgent
 from evaluation.evaluator import SOCEvaluator
 
-# ==============================================================================
-# TOKEN TRACKER
-# ==============================================================================
-class GeminiTokenTracker(BaseCallbackHandler):
-    def __init__(self):
-        self.input_tokens = 0
-        self.output_tokens = 0
-
-    def on_llm_end(self, response, **kwargs):
-        """Bắt sự kiện mỗi khi một Agent Gemini trả kết quả về"""
-        try:
-            for gen_list in response.generations:
-                for gen in gen_list:
-                    if hasattr(gen, "message") and hasattr(gen.message, "usage_metadata") and gen.message.usage_metadata:
-                        usage = gen.message.usage_metadata
-                        self.input_tokens += usage.get("input_tokens", 0)
-                        self.output_tokens += usage.get("output_tokens", 0)
-        except Exception:
-            pass
-# ==============================================================================
 
 def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
-    # 1. Bấm giờ bắt đầu
     start_time = time.time()
 
-    # 2. Khởi tạo các "nhân sự"
     coordinator = CoordinatorAgent()
     hunter = HunterAgent()
     verifier = VerifierAgent()
@@ -48,184 +23,226 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
     reporter = ReporterAgent()
     evaluator = SOCEvaluator()
 
-    # --------------------------------------------------------------------------
-    # INJECTOR
-    # --------------------------------------------------------------------------
-    tracker = GeminiTokenTracker()
-    for agent in [coordinator, hunter, verifier, analyst, reporter]:
-        for attr_name in dir(agent):
-            # Không đụng vào các thuộc tính private (bắt đầu bằng _)
-            if not attr_name.startswith("_"):
-                attr = getattr(agent, attr_name)
-                # Nếu phát hiện LLM hoặc Chain của LangChain, gắn ngay Tracker vào
-                if isinstance(attr, Runnable):
-                    setattr(agent, attr_name, attr.with_config({"callbacks": [tracker]}))
-    # --------------------------------------------------------------------------
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     scenario_id = f"{scenario_name}_{timestamp}"
-
-    # Pre-pipeline parse
-    print("\n[Evaluator] Đang dán nhãn định danh log gốc...")
-    pre_entities = evaluator._extract_entities(log_data, source_type="log")
+    run_dir = os.path.join("runs", scenario_id)
+    os.makedirs(run_dir, exist_ok=True)
 
     final_results = []
 
-    # 3. THỰC THI PIPELINE
-    cyber_plan = coordinator.plan(log_data)
-    print(f"\n[Main] Kế hoạch đã sẵn sàng với {len(cyber_plan)} nhiệm vụ.")
+    with get_openai_callback() as cb:
+        print("\n[Evaluator] Extracting baseline entities from raw log...")
+        pre_entities = evaluator._extract_entities(log_data, source_type="log")
+        entity_context = json.dumps(pre_entities, indent=2, ensure_ascii=False)
 
-    for task in cyber_plan:
-        success = False
-        retries = 0
-        max_retries = 1 
-        
-        while not success and retries <= max_retries:
-            print(f"\n[+] Đang xử lý: {task['id']} - {task['name']} (Lần thử: {retries + 1})")
-            
-            task_history = hunter.run(log_data, assigned_tasks=[task])
-            hunter_output = task_history[-1].content
-            
-            check_result = verifier.verify(task['name'], hunter_output, log_data)
-            check_str = str(check_result)
-            
-            if "OK" in check_str.upper():
-                print(f"    [✅ VERIFIED] Task {task['id']} passed!")
-                final_results.append({
-                    "task_id": task['id'],
-                    "status": "Verified",
-                    "result": hunter_output
-                })
-                success = True
-            else:
-                retries += 1
-                print(f"    [❌ FAILED] Verifier error log: {check_result}")
-                if retries <= max_retries:
-                    print(f"    [🔄 RETRY] Hunter re-working...")
-                else:
-                    print(f"    [⚠️ SKIP] Failed! Temporary saved.")
-                    final_results.append({
-                        "task_id": task['id'],
-                        "status": "Failed_Verification",
-                        "result": hunter_output,
-                        "reason": check_result
-                    })
+        cyber_plan = coordinator.plan(log_data)
+        print(f"\n[Main] Plan ready with {len(cyber_plan)} task(s).")
 
-    # Lưu kết quả Hunter
-    with open("soc_hunt_results.json", "w", encoding="utf-8") as f:
-        json.dump(final_results, f, ensure_ascii=False, indent=4)
-    
-    # Phân tích chuyên sâu (Analyst)
-    print("\n[Analyst] Đang bắt đầu giai đoạn phân tích chuyên sâu...")
-    results_str = json.dumps(final_results, indent=4, ensure_ascii=False)
-    deep_analysis = analyst.analyze_incident(results_str, log_data)
+        task_counter = 0
 
-    # Viết báo cáo kỹ thuật (Reporter)
-    final_report = reporter.generate_final_report(deep_analysis)
-    with open("FINAL_REPORT_SOC.md", "w", encoding="utf-8") as f:
-        report_str = "\n".join([str(x) for x in final_report]) if isinstance(final_report, list) else str(final_report)
-        f.write(report_str)
+        for task in cyber_plan:
+            task_counter += 1
+            success = False
+            retries = 0
+            max_retries = 2
+            last_feedback = None
 
-    # 4. GIAO VIỆC CHO EVALUATOR (GPT-4o)
-    print("\n[Evaluator] Đang dán nhãn báo cáo cuối cùng...")
-    post_entities = evaluator._extract_entities(final_report, source_type="report")
+            while not success and retries <= max_retries:
+                print(
+                    f"\n[+] Processing: {task['id']} - {task['name']} "
+                    f"(attempt {retries + 1})"
+                )
 
-    # Layer 1 & 2 evaluation
-    results_t1 = evaluator.compare_entities(pre_entities, post_entities)
-    result_t2 = evaluator.validate_enrichment(log_data, results_t1['enrichment_list'])
+                try:
+                    task_history = hunter.run(
+                        log_data,
+                        assigned_tasks=[task],
+                        verifier_feedback=last_feedback,
+                    )
+                    hunter_output = task_history[-1].content if task_history else ""
 
-    # 5. KẾT THÚC BẤM GIỜ & LẤY SỐ LIỆU
+                    time.sleep(2)
+
+                    check_result = verifier.verify(task["name"], hunter_output, log_data)
+                    check_str = str(check_result).strip()
+
+                    if check_str.upper() == "OK":
+                        print(f"    [VERIFIED] Task {task['id']} passed.")
+                        final_results.append({
+                            "task_id": task["id"],
+                            "status": "Verified",
+                            "result": hunter_output,
+                        })
+                        success = True
+                    else:
+                        retries += 1
+                        last_feedback = check_result
+                        print(f"    [FAILED] Verifier feedback: {check_result}")
+
+                        if retries <= max_retries:
+                            print("    [RETRY] Hunter re-working with verifier feedback...")
+                            time.sleep(2)
+                        else:
+                            print("    [SKIP] Verification failed after max retries.")
+                            final_results.append({
+                                "task_id": task["id"],
+                                "status": "Failed_Verification",
+                                "result": hunter_output,
+                                "reason": check_result,
+                            })
+
+                except Exception as e:
+                    error_msg = str(e)
+                    retries += 1
+
+                    if "429" in error_msg or "rate_limit" in error_msg.lower():
+                        print("    [QUOTA HIT] Sleeping 60s before retry...")
+                        last_feedback = f"Previous attempt hit rate limit: {error_msg}"
+                        time.sleep(60)
+                    else:
+                        print(f"    [API ERROR] Attempt failed: {error_msg}")
+                        last_feedback = (
+                            f"Previous attempt failed before verification: {error_msg}"
+                        )
+                        time.sleep(5)
+
+                    if retries > max_retries:
+                        final_results.append({
+                            "task_id": task["id"],
+                            "status": "Error",
+                            "result": "",
+                            "reason": error_msg,
+                        })
+
+            if task_counter % 2 == 0:
+                print(
+                    f"\n[zZz] Finished {task_counter} tasks. "
+                    "Sleeping 40s to reduce TPM pressure..."
+                )
+                time.sleep(10)
+
+        hunt_results_path = os.path.join(run_dir, "soc_hunt_results.json")
+        with open(hunt_results_path, "w", encoding="utf-8") as f:
+            json.dump(final_results, f, ensure_ascii=False, indent=4)
+
+        print("\n[Analyst] Starting deep incident analysis...")
+        lean_results = [
+            {"task": item["task_id"], "findings": item["result"]}
+            for item in final_results
+            if item["status"] == "Verified"
+        ]
+        results_str = json.dumps(lean_results, indent=2, ensure_ascii=False)
+
+        deep_analysis = analyst.analyze_incident(
+            results_str,
+            log_data,
+            entity_context=entity_context
+        )
+
+        final_report = reporter.generate_final_report(
+            deep_analysis,
+            evidence_context=results_str,
+            entity_context=entity_context
+        )
+        report_str = (
+            "\n".join([str(x) for x in final_report])
+            if isinstance(final_report, list)
+            else str(final_report)
+        )
+
+        report_path = os.path.join(run_dir, "FINAL_REPORT_SOC.md")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(report_str)
+        print(f"[Reporter] Final report saved to: {os.path.abspath(report_path)}")
+
+        print("\n[Evaluator] Extracting entities from final report...")
+        post_entities = evaluator._extract_entities(report_str, source_type="report")
+
+        results_t1 = evaluator.compare_entities(pre_entities, post_entities)
+
+        ground_truth_path = os.path.join(
+            "datasets",
+            "CobaltStrike_Lockbit",
+            "ground_truth.json",
+        )
+        with open(ground_truth_path, "r", encoding="utf-8") as f:
+            ground_truth_data = json.load(f)
+        result_t2 = evaluator.calculate_layer_2_jaccard(
+            ground_truth_data,
+            post_entities,
+            w_i=0.7,
+            w_j=0.3,
+        )
+
     latency = time.time() - start_time
+    total_input = cb.prompt_tokens
+    total_output = cb.completion_tokens
+    total_cost = cb.total_cost
 
-    # Lấy token từ cái Tracker đã gắn vào Gemini
-    gemini_in = tracker.input_tokens
-    gemini_out = tracker.output_tokens
-    gemini_cost = (gemini_in / 1_000_000 * 0.35) + (gemini_out / 1_000_000 * 1.05)
-
-    # Lấy token từ GPT-4o (Evaluator)
-    gpt_in = evaluator.openai_input_tokens
-    gpt_out = evaluator.openai_output_tokens
-
-    # Lưu báo cáo JSON
     final_eval_data = {
         "scenario_id": scenario_id,
         "metadata": {
             "test_date": timestamp,
             "latency_seconds": round(latency, 2),
-            "gemini_tokens": {"input": gemini_in, "output": gemini_out},
-            "gpt4o_tokens": {"input": gpt_in, "output": gpt_out},
+            "openai_metrics": {
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "total_cost_usd": round(total_cost, 6),
+            },
         },
-        "layer_1_recall": results_t1['layer_1_recall'],
-        "layer_2_audit": result_t2
+        "layer_1_metrics": results_t1["layer_1_metrics"],
+        "layer_2_audit": result_t2,
     }
-    
-    os.makedirs("eval_reports", exist_ok=True)
-    file_path = f"eval_reports/eval_{scenario_id}.json"
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(final_eval_data, f, indent=4, ensure_ascii=False)
 
-    # ============================================================
-    # 📊 IN BẢNG BENCHMARK THỐNG KÊ RA TERMINAL
-    # ============================================================
-    print("\n" + "="*70)
-    print(f"🔬 BENCHMARK REPORT: SCENARIO [{scenario_id}]")
-    print("="*70)
-    print("[1] ⏱️ PERFORMANCE METRICS")
+    eval_file_path = os.path.join(run_dir, "eval_report.json")
+    with open(eval_file_path, "w", encoding="utf-8") as f:
+        json.dump(final_eval_data, f, indent=4, ensure_ascii=False)
+    print(f"[Evaluator] Eval report saved to: {os.path.abspath(eval_file_path)}")
+
+    print("\n" + "=" * 70)
+    print(f"BENCHMARK REPORT: SCENARIO [{scenario_id}]")
+    print("=" * 70)
+    print("[1] PERFORMANCE METRICS")
     print(f"    - Execution Time:         {latency:.2f} seconds")
     print("-" * 70)
-    print("[2] 🪙 RESOURCE CONSUMPTION (TOKEN & COST)")
-    print(f"    {'Model':<15} | {'Input (Tk)':<12} | {'Output (Tk)':<12}")
-    print(f"    {'-'*15}-+-{'-'*12}-+-{'-'*12}-+-{'-'*12}")
-    print(f"    {'Gemma-4':<15} | {gemini_in:<12} | {gemini_out:<12}")
-    print(f"    {'GPT-4o (Judge)':<15} | {gpt_in:<12} | {gpt_out:<12}")
-    print(f"    {'-'*15}-+-{'-'*12}-+-{'-'*12}-+-{'-'*12}")
-    print(f"    {'TOTAL':<15} | {gemini_in + gpt_in:<12} | {gemini_out + gpt_out:<12}")
+    print("[2] RESOURCE CONSUMPTION (OPENAI)")
+    print(f"    - Input Tokens:           {total_input:,}")
+    print(f"    - Output Tokens:          {total_output:,}")
+    print(f"    - API Cost Estimate:      ${total_cost:.6f} USD")
     print("-" * 70)
-    print("[3] 🎯 RELIABILITY METRICS")
-    print(f"    - Layer 1 (Recall):       {results_t1['layer_1_recall']}")
+    print("[3] RELIABILITY METRICS")
+    print(f"    - Layer 1 (Recall):       {results_t1['layer_1_metrics']['recall']:.4f}")
+    print(f"    - Layer 1 (Precision):    {results_t1['layer_1_metrics']['precision']:.4f}")
+    print(f"    - Layer 1 (F1 Score):     {results_t1['layer_1_metrics']['f1_score']:.4f}")
     if result_t2:
-        print(f"    - Layer 2 Score:          {result_t2.get('enrichment_quality_score', 0)}/10")
-        print(f"    - Entities Validated:     {result_t2.get('valid_count', 0)} Valid | {result_t2.get('invalid_count', 0)} Invalid")
-    print("="*70 + "\n")
+        print(f"    - Layer 2 Score (Weighted F1): {result_t2.get('enrichment_quality_score', 0)}/10")
+        print(
+            f"      + TTPs F1: {result_t2['f1_ttps']:.4f} "
+            f"| IOCs F1: {result_t2['f1_iocs']:.4f}"
+        )
+        print(
+            f"      + TTPs Jaccard: {result_t2['jaccard_ttps']:.4f} "
+            f"| IOCs Jaccard: {result_t2['jaccard_iocs']:.4f}"
+        )
+    print("=" * 70 + "\n")
 
     return final_report
 
+
 if __name__ == "__main__":
-    sample_log_dict = {
-        "@timestamp": "2026-05-13T14:35:22.105Z",
-        "host": {
-            "hostname": "Server-01",
-            "ip": "10.10.20.50"
-        },
-        "event": {
-            "category": ["process"],
-            "type": ["access"],
-            "provider": "Microsoft-Windows-Sysmon",
-            "code": "10"
-        },
-        "rule": {
-            "level": 12,
-            "description": "Suspicious access to LSASS memory",
-            "name": "SOC_ALERT_CRED_DUMP_01"
-        },
-        "process": {
-            "source": {
-            "executable": "C:\\Windows\\Temp\\sys_update_x64.exe",
-            "user": {
-                "domain": "CORP",
-                "name": "svc_backup"
-            }
-            },
-            "target": {
-            "executable": "C:\\Windows\\system32\\lsass.exe",
-            "user": {
-                "domain": "NT AUTHORITY",
-                "name": "SYSTEM"
-            }
-            },
-            "granted_access": "0x1010"
-        }
-    }
-    
-    log_payload = json.dumps(sample_log_dict, indent=2)
-    run_cyber_defense_system(log_payload, scenario_name="SYSMON_LSASS")
+    log_file_path = os.path.join("datasets", "CobaltStrike_Lockbit", "artifacts.json")
+
+    try:
+        with open(log_file_path, "r", encoding="utf-8") as f:
+            log_payload = f.read()
+
+        print(f"[*] Loaded log from: {log_file_path}")
+        log_payload = json.dumps(json.loads(log_payload), indent=2)
+        run_cyber_defense_system(log_payload, scenario_name="CobaltStrike_LockBit_Clean")
+
+    except FileNotFoundError:
+        print(f"ERROR: File not found at {log_file_path}")
+    except json.JSONDecodeError:
+        print("ERROR: artifacts.json is not valid JSON.")
+    except Exception as e:
+        print(f"ERROR: Unexpected failure: {e}")

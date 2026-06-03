@@ -61,6 +61,8 @@ class CoordinatorAgent:
         
         prompt = ChatPromptTemplate.from_messages([
             ("system", (
+                "Return the planning result as strict JSON only. "
+                "Use double quotes for every JSON key and value. "
                 "Mày là SOC Lead chuyên nghiệp theo khung CyberTeam. "
                 "Nhiệm vụ của mày là phân tích Log và chọn ra các Task CẦN THIẾT NHẤT từ danh sách nhiệm vụ. "
                 "Đừng chọn bừa bãi, chỉ chọn những gì log có bằng chứng hoặc cần suy luận thêm."
@@ -68,7 +70,8 @@ class CoordinatorAgent:
             ("human", (
                 "Dữ liệu Log: {log}\n\n"
                 "Danh sách 30 Tasks (Roadmap): {inventory}\n\n"
-                "Hãy trả về JSON format: {{\"selected_tasks\": [{{'id': '...', 'reason': '...'}}]}}"
+                "Return only valid JSON using this shape: "
+                "{{\"selected_tasks\": [{{\"id\": \"T1\", \"reason\": \"...\"}}]}}"
             ))
         ])
         
@@ -77,11 +80,12 @@ class CoordinatorAgent:
         
         # Khớp ID để lấy đầy đủ thông tin task gửi cho Hunter
         final_plan = []
-        for item in result["selected_tasks"]:
-            task_info = next((t for t in self.task_inventory if t["id"] == item["id"]), None)
+        for item in result.get("selected_tasks", []):
+            task_info = next((t for t in self.task_inventory if t["id"] == item.get("id")), None)
             if task_info:
                 # Thêm lý do của Coordinator vào để Hunter hiểu bối cảnh
-                task_info["coordinator_reason"] = item["reason"]
+                task_info = dict(task_info)
+                task_info["coordinator_reason"] = item.get("reason", "")
                 final_plan.append(task_info)
         
         return final_plan

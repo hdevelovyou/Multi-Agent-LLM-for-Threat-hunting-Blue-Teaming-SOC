@@ -1,8 +1,10 @@
 .env
 .venv/
 .vscode/
+runs/
 __pycache__/
 model_check.py
 unit_tests.py
+extractor.py
 soc_hunt_result.json
 FINAL_REPORT_SOC.md

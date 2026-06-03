@@ -1,12 +1,16 @@
 import chromadb
+from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
 
 class Retriever:
-    def __init__(self, db_path="./chroma_db", collection_name="threat_intel"):
+    def __init__(self, db_path=None, collection_name="threat_intel"):
         """Initialize Threat Intelligence Retriever"""
+        if db_path is None:
+            db_path = Path(__file__).resolve().parents[1] / "chroma_db"
+
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.client = chromadb.PersistentClient(path=db_path)
+        self.client = chromadb.PersistentClient(path=str(db_path))
         self.collection = self.client.get_collection(collection_name)
     
     def search(self, query, n_results=3):
