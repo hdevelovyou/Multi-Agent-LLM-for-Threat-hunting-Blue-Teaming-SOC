@@ -1,5 +1,4 @@
 {
-  "case_name": "CobaltStrike_LockBit_Ransomware",
   "dataset_type": "synthetic_raw_windows_telemetry",
   "format_note": "Raw telemetry only. Ground-truth labels, MITRE technique mappings, IOC reference lists, and synthetic case labels are removed from each event.",
   "total_events": 51,

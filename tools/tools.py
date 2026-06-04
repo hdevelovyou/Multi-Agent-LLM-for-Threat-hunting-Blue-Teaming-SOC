@@ -26,6 +26,7 @@ def ner_tool(text: str):
     # 1. System Prompt
     system_prompt = (
         "You are a cybersecurity threat intelligence assistant specialized in named entity recognition. "
+        "This is a role-based zero-shot tool task: use only the supplied text. "
         "Your task is to extract and categorize all named entities relevant to threat attribution from the provided text. "
         "Focus on answering: 'Who is responsible for the attack?', 'How was the attack carried out?'."
     )
@@ -64,7 +65,9 @@ def rex_tool(text: str):
     
     # System Prompt: Bê nguyên xi vai trò trợ lý parsing
     system_prompt = (
-        "You are a cybersecurity parsing assistant. Your task is to extract standard "
+        "You are a cybersecurity parsing assistant. "
+        "This is a role-based zero-shot tool task: use only the supplied document. "
+        "Your task is to extract standard "
         "threat indicators from raw incident reports using predefined regex patterns."
     )
     
@@ -95,7 +98,11 @@ def rag_tool(topic: str):
     """
     
     # System Prompt 
-    system_prompt = "You are a cybersecurity assistant. Formulate a concise search query to retrieve current information about the topic specified below."
+    system_prompt = (
+        "You are a cybersecurity retrieval planner. "
+        "This is a role-based zero-shot tool task: use only the supplied topic. "
+        "Formulate a concise search query to retrieve relevant threat intelligence."
+    )
     
     # Instructions 
     instructions = (
@@ -134,7 +141,9 @@ def sum_tool(text: str):
 
     # System Prompt: Bê nguyên xi vai trò trợ lý phân tích an ninh mạng
     system_prompt = (
-        "You are a cybersecurity analyst assistant. Your task is to summarize the following "
+        "You are a cybersecurity analyst assistant. "
+        "This is a role-based zero-shot tool task: use only the supplied text. "
+        "Your task is to summarize the following "
         "threat report in 3-4 sentences, preserving the attack vector, affected systems, "
         "timeline, and any mentioned threat actors or IOCs."
     )
@@ -165,7 +174,8 @@ def sim_tool(phrase1: str, phrase2: str):
     # System Prompt
     system_prompt = (
         "You are a cybersecurity assistant that helps analysts determine whether two "
-        "geolocation or cultural indicators refer to the same threat origin. "
+        "phrases refer to the same threat context. This is a role-based zero-shot tool task: "
+        "use only the two supplied phrases. "
         "Use contextual reasoning to decide if the two phrases describe the same "
         "group or region in a cyber threat context."
     )
@@ -201,7 +211,9 @@ def map_tool(text: str):
 
     # System Prompt: Trợ lý xây dựng đồ thị tri thức an ninh mạng
     system_prompt = (
-        "You are a cybersecurity knowledge graph assistant. Extract and relate key "
+        "You are a cybersecurity knowledge graph assistant. "
+        "This is a role-based zero-shot tool task: use only the supplied report excerpt. "
+        "Extract and relate key "
         "entities from the given threat report to form subject-predicate-object triples."
     )
 
@@ -234,6 +246,7 @@ def spa_tool(text: str):
     # System Prompt: Vai trò trợ lý định vị vùng văn bản
     system_prompt = (
         "You are a cybersecurity span identification assistant. "
+        "This is a role-based zero-shot tool task: use only the supplied report excerpt. "
         "Extract the text span that describes the primary technique used in the attack."
     )
     
@@ -261,7 +274,9 @@ def cls_tool(text: str, category: str):
     
     # Xây dựng System Prompt dựa trên mô tả B.8
     system_prompt = (
-        "You are a cybersecurity classification assistant. Your task is to categorize "
+        "You are a cybersecurity classification assistant. "
+        "This is a role-based zero-shot tool task: use only the supplied text and category. "
+        "Your task is to categorize "
         "cybersecurity-relevant textual inputs into predefined classes."
     )
     
@@ -295,7 +310,8 @@ def math_tool(vulnerability_description: str, metrics_values: str):
     # System Prompt: Vai trò trợ lý tính điểm bảo mật
     system_prompt = (
         "You are a cybersecurity scoring assistant. Given a vulnerability description "
-        "and metric values (Confidentiality, Integrity, Availability, Scope, "
+        "and metric values, this is a role-based zero-shot tool task: use only those supplied inputs. "
+        "Metric values may include Confidentiality, Integrity, Availability, Scope, "
         "Attack Vector, etc.), compute the CVSS v3.1 Base Score."
     )
 

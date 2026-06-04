@@ -46,6 +46,7 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
             retries = 0
             max_retries = 2
             last_feedback = None
+            last_hunter_output = None
 
             while not success and retries <= max_retries:
                 print(
@@ -58,8 +59,10 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
                         log_data,
                         assigned_tasks=[task],
                         verifier_feedback=last_feedback,
+                        previous_hunter_output=last_hunter_output,
                     )
                     hunter_output = task_history[-1].content if task_history else ""
+                    last_hunter_output = hunter_output
 
                     time.sleep(2)
 
@@ -117,7 +120,7 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
             if task_counter % 2 == 0:
                 print(
                     f"\n[zZz] Finished {task_counter} tasks. "
-                    "Sleeping 40s to reduce TPM pressure..."
+                    "Sleeping 10s to reduce TPM pressure..."
                 )
                 time.sleep(10)
 

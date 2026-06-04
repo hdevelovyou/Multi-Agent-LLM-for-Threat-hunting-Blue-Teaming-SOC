@@ -1,9 +1,16 @@
+import json
 import os
 from dotenv import load_dotenv
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
+from prompts import (
+    build_hunter_final_instruction,
+    build_hunter_initial_messages,
+    build_hunter_retry_instruction,
+    build_hunter_tool_instruction,
+)
 from tools.tools import (
     ner_tool,
     rag_tool,
@@ -86,7 +93,14 @@ class HunterAgent:
             "math_tool": math_tool,
         }
 
-    def run(self, raw_log, assigned_tasks, verifier_feedback=None, max_tool_steps=3):
+    def run(
+        self,
+        raw_log,
+        assigned_tasks,
+        verifier_feedback=None,
+        previous_hunter_output=None,
+        max_tool_retries=2,
+    ):
         print(f"--- START HUNTER WORKFLOW: {len(assigned_tasks)} task(s) ---")
         run_history = []
 
@@ -94,91 +108,112 @@ class HunterAgent:
             task_desc = f"{task['id']}: {task['name']} (Target: {task['target']})"
             print(f"\n[+] Processing: {task_desc}")
 
-            allowed_tool_names = task.get("tools", [])
-            task_specific_tools = [
-                self.tool_inventory[name]
-                for name in allowed_tool_names
-                if name in self.tool_inventory
-            ]
+            configured_tool_names = task.get("tools") or []
+            allowed_tool_names = []
+            for name in configured_tool_names:
+                if name in self.tool_inventory and name not in allowed_tool_names:
+                    allowed_tool_names.append(name)
 
-            if not task_specific_tools:
+            if not allowed_tool_names:
                 allowed_tool_names = ["ner_tool"]
-                task_specific_tools = [self.tool_inventory["ner_tool"]]
 
-            task_llm = self.base_llm.bind_tools(task_specific_tools)
             reason = task.get("coordinator_reason", "No coordinator reason provided.")
-            feedback_text = ""
-            if verifier_feedback:
-                feedback_text = f"\nVerifier feedback from previous attempt: {verifier_feedback}\n"
+            task_messages = build_hunter_initial_messages(
+                task_desc=task_desc,
+                reason=reason,
+                allowed_tool_names=allowed_tool_names,
+                raw_log=raw_log,
+                verifier_feedback=verifier_feedback,
+                previous_hunter_output=previous_hunter_output,
+            )
 
-            task_messages = [
-                SystemMessage(content=(
-                    "You are a SOC threat hunting specialist in a blue-team multi-agent workflow. "
-                    "This is a zero-shot hunting task: use only the raw log, coordinator reason, "
-                    "allowed tools, and verifier feedback supplied in this conversation. "
-                    "Ground every finding in observable log evidence or tool output. "
-                    "Do not invent IOCs, hashes, hosts, users, malware names, actor names, or MITRE IDs."
-                )),
-                HumanMessage(content=(
-                    f"Task: {task_desc}\n"
-                    f"Coordinator reason: {reason}\n"
-                    f"Allowed tools: {', '.join(allowed_tool_names)}\n"
-                    f"{feedback_text}"
-                    "Tool policy:\n"
-                    "- Use each allowed tool at most once unless verifier feedback explicitly asks for re-checking it.\n"
-                    "- Prefer rex_tool for IP/domain/hash/timestamp extraction.\n"
-                    "- Prefer rag_tool/map_tool for MITRE ATT&CK TTP mapping.\n"
-                    "- If the next useful tool input is unavailable, stop calling tools and produce the final finding.\n\n"
-                    "Final answer requirements:\n"
-                    "- Cite event evidence by timestamp, host, process, file, user, command line, or network indicator.\n"
-                    "- Include all observed IOCs relevant to this task, especially full MD5/SHA1/SHA256 hashes.\n"
-                    "- Include MITRE ATT&CK IDs in Txxxx/Txxxx.xxx format when behavior maps to a technique.\n"
-                    "- Include confidence and note any evidence gaps.\n\n"
-                    f"Raw log:\n{raw_log}"
-                )),
-            ]
+            tool_results = []
+            for tool_name in allowed_tool_names:
+                selected_tool = self.tool_inventory[tool_name]
+                tool_llm = self.base_llm.bind_tools([selected_tool], tool_choice=tool_name)
+                executed = False
 
-            ai_msg = None
-            used_tool_names = set()
-            for _ in range(max_tool_steps):
-                ai_msg = task_llm.invoke(task_messages)
-                task_messages.append(ai_msg)
+                for attempt in range(max_tool_retries + 1):
+                    task_messages.append(HumanMessage(content=build_hunter_tool_instruction(tool_name)))
+                    ai_msg = tool_llm.invoke(task_messages)
+                    task_messages.append(ai_msg)
 
-                if not ai_msg.tool_calls:
-                    break
+                    for tool_call in ai_msg.tool_calls or []:
+                        called_tool_name = tool_call["name"]
+                        if called_tool_name != tool_name:
+                            task_messages.append(ToolMessage(
+                                content=(
+                                    f"Error: expected mandatory tool '{tool_name}', "
+                                    f"but model called '{called_tool_name}'."
+                                ),
+                                tool_call_id=tool_call["id"],
+                            ))
+                            continue
 
-                for tool_call in ai_msg.tool_calls:
-                    tool_name = tool_call["name"]
-                    print(f"    [!] Running tool: {tool_name}")
-                    try:
-                        if tool_name not in allowed_tool_names:
-                            raise ValueError(
-                                f"Tool '{tool_name}' is not allowed for task {task['id']}"
-                            )
-                        if tool_name in used_tool_names and not verifier_feedback:
-                            raise ValueError(
-                                f"Tool '{tool_name}' already ran for task {task['id']}; produce final answer from existing evidence"
-                            )
+                        if executed:
+                            task_messages.append(ToolMessage(
+                                content=(
+                                    f"Error: mandatory tool '{tool_name}' was already executed "
+                                    "for this task attempt; duplicate tool call ignored."
+                                ),
+                                tool_call_id=tool_call["id"],
+                            ))
+                            continue
 
-                        selected_tool = self.tool_inventory[tool_name]
-                        tool_output = selected_tool.invoke(tool_call["args"])
-                        used_tool_names.add(tool_name)
-                        task_messages.append(ToolMessage(
-                            content=str(tool_output),
-                            tool_call_id=tool_call["id"],
-                        ))
-                    except Exception as e:
-                        task_messages.append(ToolMessage(
-                            content=f"Error: {str(e)}",
-                            tool_call_id=tool_call["id"],
-                        ))
-            else:
-                task_messages.append(HumanMessage(content=(
-                    "Stop calling tools. Produce the final task finding from the evidence "
-                    "already available. If evidence is insufficient, say so explicitly."
-                )))
-                ai_msg = self.base_llm.invoke(task_messages)
-                task_messages.append(ai_msg)
+                        print(f"    [!] Running tool: {tool_name}")
+                        try:
+                            tool_output = selected_tool.invoke(tool_call["args"])
+                            output_text = str(tool_output)
+                            tool_results.append({
+                                "tool": tool_name,
+                                "status": "ok",
+                                "output": output_text,
+                            })
+                            task_messages.append(ToolMessage(
+                                content=output_text,
+                                tool_call_id=tool_call["id"],
+                            ))
+                        except Exception as e:
+                            output_text = f"Error: {str(e)}"
+                            tool_results.append({
+                                "tool": tool_name,
+                                "status": "error",
+                                "output": output_text,
+                            })
+                            task_messages.append(ToolMessage(
+                                content=output_text,
+                                tool_call_id=tool_call["id"],
+                            ))
+
+                        executed = True
+
+                    if executed:
+                        break
+
+                    task_messages.append(HumanMessage(content=build_hunter_retry_instruction(
+                        tool_name,
+                        attempt + 1,
+                    )))
+
+                if not executed:
+                    tool_results.append({
+                        "tool": tool_name,
+                        "status": "not_executed",
+                        "output": (
+                            "The model failed to issue the required tool call after "
+                            f"{max_tool_retries + 1} attempt(s)."
+                        ),
+                    })
+
+            tool_audit = json.dumps(tool_results, indent=2, ensure_ascii=False)
+            task_messages.append(HumanMessage(content=build_hunter_final_instruction(tool_audit)))
+            final_msg = self.base_llm.invoke(task_messages)
+            final_content = (
+                f"{final_msg.content}\n\n"
+                f"Tool Execution Audit:\n{tool_audit}"
+            )
+            ai_msg = AIMessage(content=final_content)
+            task_messages.append(ai_msg)
 
             run_history.extend(task_messages)
             self.history.extend(task_messages)
