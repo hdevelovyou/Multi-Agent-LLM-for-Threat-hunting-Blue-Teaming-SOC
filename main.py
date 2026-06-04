@@ -11,6 +11,15 @@ from agents.verifier_agent import VerifierAgent
 from agents.analyst_agent import AnalystAgent
 from agents.reporter_agent import ReporterAgent
 from evaluation.evaluator import SOCEvaluator
+from strategies.cyberteam_dag import (
+    build_initial_dag_state,
+    build_upstream_context,
+    dag_to_mermaid,
+    expand_and_sort_plan,
+    export_dag,
+    record_task_failure,
+    record_task_success,
+)
 
 
 def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
@@ -35,8 +44,21 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
         pre_entities = evaluator._extract_entities(log_data, source_type="log")
         entity_context = json.dumps(pre_entities, indent=2, ensure_ascii=False)
 
-        cyber_plan = coordinator.plan(log_data)
-        print(f"\n[Main] Plan ready with {len(cyber_plan)} task(s).")
+        coordinator_plan = coordinator.plan(log_data)
+        cyber_plan = expand_and_sort_plan(coordinator_plan)
+        dag_state = build_initial_dag_state(entity_context)
+
+        print(
+            f"\n[Main] Coordinator selected {len(coordinator_plan)} task(s); "
+            f"DAG-expanded plan has {len(cyber_plan)} task(s)."
+        )
+
+        dag_export = export_dag(cyber_plan)
+        dag_export["mermaid"] = dag_to_mermaid(cyber_plan)
+        dag_path = os.path.join(run_dir, "cyberteam_dag.json")
+        with open(dag_path, "w", encoding="utf-8") as f:
+            json.dump(dag_export, f, ensure_ascii=False, indent=4)
+        print(f"[Main] CyberTeam DAG saved to: {os.path.abspath(dag_path)}")
 
         task_counter = 0
 
@@ -55,9 +77,11 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
                 )
 
                 try:
+                    upstream_context = build_upstream_context(task, dag_state)
                     task_history = hunter.run(
                         log_data,
                         assigned_tasks=[task],
+                        upstream_context=upstream_context,
                         verifier_feedback=last_feedback,
                         previous_hunter_output=last_hunter_output,
                     )
@@ -73,9 +97,13 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
                         print(f"    [VERIFIED] Task {task['id']} passed.")
                         final_results.append({
                             "task_id": task["id"],
+                            "task_name": task["name"],
                             "status": "Verified",
+                            "depends_on": task.get("depends_on", []),
+                            "selected_by_coordinator": task.get("selected_by_coordinator", False),
                             "result": hunter_output,
                         })
+                        record_task_success(dag_state, task, hunter_output)
                         success = True
                     else:
                         retries += 1
@@ -89,10 +117,14 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
                             print("    [SKIP] Verification failed after max retries.")
                             final_results.append({
                                 "task_id": task["id"],
+                                "task_name": task["name"],
                                 "status": "Failed_Verification",
+                                "depends_on": task.get("depends_on", []),
+                                "selected_by_coordinator": task.get("selected_by_coordinator", False),
                                 "result": hunter_output,
                                 "reason": check_result,
                             })
+                            record_task_failure(dag_state, task, hunter_output, check_result)
 
                 except Exception as e:
                     error_msg = str(e)
@@ -112,10 +144,14 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
                     if retries > max_retries:
                         final_results.append({
                             "task_id": task["id"],
+                            "task_name": task["name"],
                             "status": "Error",
+                            "depends_on": task.get("depends_on", []),
+                            "selected_by_coordinator": task.get("selected_by_coordinator", False),
                             "result": "",
                             "reason": error_msg,
                         })
+                        record_task_failure(dag_state, task, "", error_msg)
 
             if task_counter % 2 == 0:
                 print(

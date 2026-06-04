@@ -94,6 +94,7 @@ def build_hunter_initial_messages(
     reason,
     allowed_tool_names,
     raw_log,
+    upstream_context=None,
     verifier_feedback=None,
     previous_hunter_output=None,
 ):
@@ -116,6 +117,12 @@ def build_hunter_initial_messages(
         reflexion_context=reflexion_context,
         raw_log=raw_log,
     )
+    if upstream_context:
+        human_prompt += (
+            "\n\nVerified upstream DAG context from prerequisite tasks. "
+            "Use this to continue reasoning, not to replace raw artifact evidence:\n"
+            f"{upstream_context}\n"
+        )
     return [
         SystemMessage(content=prompt["system"]),
         HumanMessage(content=human_prompt),
@@ -126,7 +133,9 @@ def build_hunter_tool_instruction(tool_name):
     return (
         f"Call mandatory tool now: {tool_name}.\n"
         "Call exactly this tool once. Use the raw log, task target, coordinator reason, "
-        "and reflexion context as the input basis. Do not produce the final answer yet."
+        "verified upstream DAG context, and reflexion context as the input basis. "
+        "For ner_tool and rex_tool, extract from the full raw artifact/log. "
+        "Do not produce the final answer yet."
     )
 
 
@@ -140,7 +149,9 @@ def build_hunter_retry_instruction(tool_name, attempt):
 def build_hunter_final_instruction(tool_audit):
     return (
         "All mandatory tool-call attempts for this task are complete. "
-        "Produce the final task finding from the raw log, reflexion context, and tool outputs. "
+        "Produce the final task finding from the raw log, upstream DAG context, reflexion context, and tool outputs. "
+        "Be concise and evidence-dense; avoid generic SOC filler. "
+        "Treat unsupported NER/REX IOC validation entries as non-evidence unless separately visible in the raw artifact. "
         "Include a concise Tool Execution Audit so the verifier can validate which tools ran.\n\n"
         f"Tool Execution Audit:\n{tool_audit}"
     )

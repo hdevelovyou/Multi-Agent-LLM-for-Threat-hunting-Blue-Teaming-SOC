@@ -1,5 +1,7 @@
 import json
 import os
+import hashlib
+import re
 from dotenv import load_dotenv
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -11,6 +13,7 @@ from prompts import (
     build_hunter_retry_instruction,
     build_hunter_tool_instruction,
 )
+from agents.task_catalog import TASK_INVENTORY, clone_task
 from tools.tools import (
     ner_tool,
     rag_tool,
@@ -47,38 +50,7 @@ class HunterAgent:
             temperature=0,
         )
 
-        self.task_inventory = [
-            {"id": "T1", "name": "Malware Identification", "target": "Malware delivery or toolset", "tools": ["ner_tool", "sum_tool"]},
-            {"id": "T2", "name": "Signature Matching", "target": "Techniques from known threat groups", "tools": ["ner_tool", "sim_tool"]},
-            {"id": "T3", "name": "Temporal Pattern Matching", "target": "Known work schedules", "tools": ["rex_tool"]},
-            {"id": "T4", "name": "Affiliation Linking", "target": "Source organizations", "tools": ["ner_tool", "map_tool"]},
-            {"id": "T5", "name": "Geographic Analysis", "target": "Geographic or cultural indicators", "tools": ["ner_tool", "sim_tool"]},
-            {"id": "T6", "name": "Victimology Profiling", "target": "Targeted victims or attacker motives", "tools": ["ner_tool", "rex_tool"]},
-            {"id": "T7", "name": "Infrastructure Extraction", "target": "Domains, IPs, URLs, or file hashes", "tools": ["ner_tool", "rex_tool", "sum_tool"]},
-            {"id": "T8", "name": "Actor Identification", "target": "The threat group or actor (e.g., APT28)", "tools": ["ner_tool", "rag_tool", "map_tool"]},
-            {"id": "T9", "name": "Campaign Correlation", "target": "Threat campaigns or incidents", "tools": ["ner_tool", "map_tool"]},
-            {"id": "T10", "name": "File System Activity Detection", "target": "Suspicious file creation, deletion, or access", "tools": ["spa_tool", "ner_tool", "sum_tool"]},
-            {"id": "T11", "name": "Network Behavior Profiling", "target": "Patterns of external communication (e.g., C2)", "tools": ["spa_tool", "ner_tool", "sum_tool"]},
-            {"id": "T12", "name": "Credential Access Detection", "target": "Theft or misuse of credentials", "tools": ["spa_tool", "ner_tool", "sum_tool"]},
-            {"id": "T13", "name": "Execution Context Analysis", "target": "Execution behaviors by user or process", "tools": ["spa_tool", "ner_tool", "sum_tool"]},
-            {"id": "T14", "name": "Command & Script Analysis", "target": "Suspicious commands or scripts", "tools": ["spa_tool", "ner_tool", "sum_tool"]},
-            {"id": "T15", "name": "Privilege Escalation Inference", "target": "Privilege escalation attempts", "tools": ["spa_tool", "ner_tool", "sum_tool"]},
-            {"id": "T16", "name": "Evasion Behavior Detection", "target": "Evasion or obfuscation techniques", "tools": ["spa_tool", "ner_tool", "sum_tool"]},
-            {"id": "T17", "name": "Event Sequence Reconstruction", "target": "Timeline of attack-related events", "tools": ["sum_tool"]},
-            {"id": "T18", "name": "TTP Extraction", "target": "Tactics, techniques, and procedures", "tools": ["rag_tool", "map_tool"]},
-            {"id": "T19", "name": "Attack Vector Classification", "target": "Exploitation vectors (e.g., network, local, physical)", "tools": ["sum_tool", "cls_tool"]},
-            {"id": "T20", "name": "Attack Complexity Classification", "target": "Level of hurdles required to carry out the attack", "tools": ["sum_tool", "cls_tool"]},
-            {"id": "T21", "name": "Privileges Requirement Detection", "target": "Level of access privileges an attacker needs", "tools": ["sum_tool", "cls_tool"]},
-            {"id": "T22", "name": "User Interaction Categorization", "target": "If exploitation requires user participation", "tools": ["sum_tool", "cls_tool"]},
-            {"id": "T23", "name": "Attack Scope Detection", "target": "If the vulnerability affects one/multiple components", "tools": ["sum_tool", "cls_tool"]},
-            {"id": "T24", "name": "Impact Level Classification", "target": "Consequences on confidentiality, integrity, and availability", "tools": ["sum_tool", "cls_tool"]},
-            {"id": "T25", "name": "Severity Scoring", "target": "A numerical score indicating the overall attack severity", "tools": ["sum_tool", "math_tool"]},
-            {"id": "T26", "name": "Playbook Recommendation", "target": "Relevant response actions based on threat type", "tools": ["rag_tool", "sum_tool"]},
-            {"id": "T27", "name": "Security Control Adjustment", "target": "Firewall rules, EDR settings, or group policies", "tools": ["rag_tool", "sum_tool"]},
-            {"id": "T28", "name": "Patch Code Generation", "target": "Code snippets to patch the vulnerability", "tools": ["rag_tool", "sum_tool"]},
-            {"id": "T29", "name": "Patch Tool Suggestion", "target": "Security tools or utilities", "tools": ["rag_tool", "sum_tool"]},
-            {"id": "T30", "name": "Advisory Correlation", "target": "Security advisories or best practices", "tools": ["rag_tool", "sum_tool"]},
-        ]
+        self.task_inventory = [clone_task(task["id"]) for task in TASK_INVENTORY]
 
         self.history = []
         self.tool_inventory = {
@@ -92,11 +64,13 @@ class HunterAgent:
             "cls_tool": cls_tool,
             "math_tool": math_tool,
         }
+        self.tool_cache = {}
 
     def run(
         self,
         raw_log,
         assigned_tasks,
+        upstream_context=None,
         verifier_feedback=None,
         previous_hunter_output=None,
         max_tool_retries=2,
@@ -123,6 +97,7 @@ class HunterAgent:
                 reason=reason,
                 allowed_tool_names=allowed_tool_names,
                 raw_log=raw_log,
+                upstream_context=upstream_context,
                 verifier_feedback=verifier_feedback,
                 previous_hunter_output=previous_hunter_output,
             )
@@ -160,13 +135,38 @@ class HunterAgent:
                             ))
                             continue
 
-                        print(f"    [!] Running tool: {tool_name}")
+                        effective_args = self._build_effective_tool_args(
+                            tool_name,
+                            tool_call.get("args", {}),
+                            raw_log,
+                        )
+                        cache_key = self._tool_cache_key(tool_name, effective_args)
+                        cached_output = self.tool_cache.get(cache_key)
+
                         try:
-                            tool_output = selected_tool.invoke(tool_call["args"])
-                            output_text = str(tool_output)
+                            if cached_output is None:
+                                print(f"    [!] Running tool: {tool_name}")
+                                tool_output = selected_tool.invoke(effective_args)
+                                cache_status = "miss"
+                                self.tool_cache[cache_key] = tool_output
+                            else:
+                                print(f"    [=] Using cached tool result: {tool_name}")
+                                tool_output = cached_output
+                                cache_status = "hit"
+
+                            output_payload = self._build_tool_output_payload(
+                                tool_name,
+                                tool_output,
+                                raw_log,
+                                cache_status,
+                                cache_key,
+                            )
+                            output_text = json.dumps(output_payload, indent=2, ensure_ascii=False)
                             tool_results.append({
                                 "tool": tool_name,
                                 "status": "ok",
+                                "cache_status": cache_status,
+                                "cache_key": cache_key,
                                 "output": output_text,
                             })
                             task_messages.append(ToolMessage(
@@ -224,3 +224,96 @@ class HunterAgent:
             print(f"    [V] Task {task['id']} completed.")
 
         return run_history
+
+    def _build_effective_tool_args(self, tool_name, tool_args, raw_log):
+        if tool_name in {"ner_tool", "rex_tool"}:
+            return {"text": raw_log}
+        return dict(tool_args or {})
+
+    def _tool_cache_key(self, tool_name, tool_args):
+        normalized_args = json.dumps(tool_args, sort_keys=True, ensure_ascii=False, default=str)
+        digest = hashlib.sha256(normalized_args.encode("utf-8")).hexdigest()
+        return f"{tool_name}:{digest}"
+
+    def _build_tool_output_payload(self, tool_name, tool_output, raw_log, cache_status, cache_key):
+        payload = {
+            "cache": {
+                "status": cache_status,
+                "key": cache_key,
+            },
+            "tool_output": tool_output,
+        }
+        if tool_name in {"ner_tool", "rex_tool"}:
+            payload["ioc_artifact_validation"] = self._validate_iocs_against_artifact(
+                tool_output,
+                raw_log,
+            )
+        return payload
+
+    def _validate_iocs_against_artifact(self, tool_output, raw_log):
+        candidates = sorted(self._extract_ioc_candidates(tool_output))
+        raw_lower = raw_log.lower()
+        supported = []
+        unsupported = []
+
+        for candidate in candidates:
+            if candidate.lower() in raw_lower:
+                supported.append(candidate)
+            else:
+                unsupported.append(candidate)
+
+        return {
+            "policy": "NER/REX IOC candidates must appear verbatim in the raw artifact.",
+            "supported_iocs": supported,
+            "unsupported_iocs": unsupported,
+        }
+
+    def _extract_ioc_candidates(self, value):
+        text_parts = []
+        self._collect_strings(value, text_parts)
+        text = "\n".join(text_parts)
+
+        patterns = [
+            ("hash", r"\b(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\b"),
+            ("ip", r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b"),
+            ("url", r"https?://[^\s\"'<>]+"),
+            ("domain", r"\b[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"),
+            ("path", r"[A-Za-z]:\\[^\s\"'<>]+"),
+        ]
+        candidates = set()
+        for kind, pattern in patterns:
+            for match in re.findall(pattern, text):
+                candidate = match.rstrip(".,;:)")
+                if kind == "domain" and self._looks_like_file_extension(candidate):
+                    continue
+                candidates.add(candidate)
+        return candidates
+
+    def _looks_like_file_extension(self, value):
+        suffix = value.rsplit(".", 1)[-1].lower() if "." in value else ""
+        return suffix in {
+            "bat",
+            "cmd",
+            "dll",
+            "doc",
+            "docx",
+            "exe",
+            "json",
+            "log",
+            "pdf",
+            "ps1",
+            "tmp",
+            "txt",
+        }
+
+    def _collect_strings(self, value, output):
+        if isinstance(value, str):
+            output.append(value)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                self._collect_strings(item, output)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                self._collect_strings(item, output)
