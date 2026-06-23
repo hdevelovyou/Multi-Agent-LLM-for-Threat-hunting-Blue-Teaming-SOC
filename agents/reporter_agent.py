@@ -12,7 +12,7 @@ api_key = os.getenv("GOOGLE_API_KEY")
 class ReporterAgent:
     def __init__(self):
         self.llm = ChatGoogleGenerativeAI(
-            model="models/gemma-4-31b-it",
+            model="models/gemma-4-26b-a4b-it",
             google_api_key=api_key,
             temperature=0,
         )

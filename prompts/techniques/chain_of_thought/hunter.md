@@ -29,7 +29,7 @@ Tool policy:
 - Prefer rex_tool for IP/domain/hash/timestamp extraction.
 - Prefer rag_tool/map_tool for MITRE ATT&CK TTP mapping.
 - If tool input is ambiguous, use the raw artifact/log, upstream DAG context, and the task target as the tool input.
-- For ner_tool and rex_tool, extract from the full raw artifact/log to preserve IOC recall.
+- For ner_tool and rex_tool, extract from the supplied task-scoped artifact/log to preserve task-relevant recall.
 
 Internal reasoning checklist:
 1. Identify task-relevant evidence in the raw artifact.
@@ -43,6 +43,7 @@ Final answer structure:
 1. Task Verdict: Supported, Partially Supported, or Not Supported.
 2. Evidence Chain: chronological evidence with timestamp/host/user/process/command/file/network fields when present.
 3. Observed IOCs and Entities: grouped by type; preserve hashes, full URLs, IP:port, paths, commands, registry keys, scheduled tasks, services.
+   For T7, include Classification (malicious/suspicious/benign/unknown), Evidence/Event IDs, and Rationale. Keep benign values visible but separated from malicious/suspicious IOC candidates.
 4. MITRE ATT&CK Candidates: Technique ID, Technique Name if known, Evidence, Confidence.
 5. Reasoning Summary: brief claim -> evidence -> inference explanation.
 6. Evidence Gaps: missing or uncertain data.

@@ -7,6 +7,8 @@ Follow the evidence coverage discipline shown in the examples, but select tasks 
 Do not copy example IOCs, hosts, malware names, actor names, or MITRE IDs into the answer unless they appear in the current raw artifact.
 Do not use ground truth, scenario labels, or hidden knowledge.
 Return strict JSON only, with double quotes for every key and string value.
+Select the smallest high-value task set that preserves report quality. Each selected task triggers mandatory tool calls, verification, DAG dependencies, and downstream summarization.
+For a normal multi-phase intrusion select 8-10 tasks; select 11-12 only when directly necessary; never select more than 12 tasks.
 
 ## Human Prompt
 Few-shot planning examples:
@@ -39,6 +41,10 @@ Selection rules learned from the examples:
 - Strict entity isolation: Do not infer or assign network roles (e.g., assuming an entity is a "Workstation" or "Local Admin") unless explicitly justified by the log data. 
 - Always include infrastructure extraction when the artifact contains observable IOCs.
 - Avoid response, patching, advisory, geography, campaign, or attribution tasks unless the current raw artifact directly supports them.
+- Avoid Stage 3 prioritization tasks (T19-T25) unless the raw artifact explicitly asks for CVSS-like scoring or contains enough evidence to classify that exact metric. Do not select broad impact/scope tasks merely because the incident looks severe.
+- Avoid Stage 4 response/mitigation tasks (T26-T30) unless response guidance is explicitly requested.
+- Avoid attribution/campaign/geography/victimology tasks (T4-T9) unless the raw artifact directly names or strongly evidences those dimensions.
+- For a malware intrusion with IOCs, file activity, network activity, credential access/evasion, timeline, and ATT&CK mapping, prefer a compact core set such as T1, T7, T10, T11, T12, T14, T16, T17, T18. Add T13 only when process/user context is uniquely necessary; add T15 only when privilege escalation is directly evidenced beyond running as a privileged account.
 
 The order in the examples is not mandatory. For the current case, order selected tasks by CyberTeam stage/task ID unless evidence strongly requires a different order.
 
@@ -48,13 +54,5 @@ Current Raw Artifact / Log:
 CyberTeam Task Inventory:
 {inventory}
 
-Return only valid JSON matching the exact structure from the inventory, adding your evidence-backed reason:
-{{"selected_tasks": [
-  {{
-    "id": "T...", 
-    "name": "...", 
-    "target": "...", 
-    "tools": ["...", "..."], 
-    "reason": "Evidence-backed reason from the raw artifact"
-  }}
-]}}
+Return only valid JSON using this compact structure:
+{{"selected_tasks": [{{"id": "T1", "reason": "Evidence-backed reason from the raw artifact"}}]}}

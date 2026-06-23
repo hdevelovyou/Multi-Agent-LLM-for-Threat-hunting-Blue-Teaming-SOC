@@ -1,5 +1,6 @@
 import json
 import os
+import ipaddress
 import re
 
 from dotenv import load_dotenv
@@ -174,17 +175,28 @@ class SOCEvaluator:
                 continue
 
             extracted = set()
-            extracted.update(match.lower() for match in re.findall(ip_pattern, value))
+            for match in re.findall(ip_pattern, value):
+                if self._is_public_ip(match):
+                    extracted.add(match.lower())
             extracted.update(match.lower() for match in re.findall(domain_pattern, value))
             extracted.update(match.lower() for match in re.findall(file_pattern, value, re.IGNORECASE))
             extracted.update(match.lower() for match in re.findall(hash_pattern, value))
 
-            if extracted:
-                normalized.update(extracted)
-            else:
-                normalized.add(value)
+            normalized.update(extracted)
 
         return normalized
+
+    def _is_public_ip(self, value):
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return False
+        return not (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+        )
 
     def _set_metrics(self, expected, found):
         intersection = expected.intersection(found)
@@ -218,7 +230,7 @@ class SOCEvaluator:
         t_ma = self._normalize_techniques(ma_entities.get("techniques", []))
 
         ma_ioc_values = []
-        for cat in ["ips", "hosts", "users", "processes", "files", "hashes"]:
+        for cat in ["ips", "hosts", "processes", "files", "hashes"]:
             ma_ioc_values.extend(ma_entities.get(cat, []))
         i_ma = self._normalize_iocs(ma_ioc_values)
 

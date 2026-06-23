@@ -1,19 +1,392 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 from src.retriever import Retriever
 from dotenv import load_dotenv
+from functools import lru_cache
+from collections import defaultdict
+import ipaddress
+import json
 import os
+import re
 
 load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
 
-shared_llm = ChatGoogleGenerativeAI(
-    model="models/gemma-4-31b-it",
+shared_llm = ChatOpenAI(
+    model="gpt-4.1-mini",
     temperature=0,
-    google_api_key=api_key
+    openai_api_key=api_key,
 )
+json_shared_llm = shared_llm.bind(response_format={"type": "json_object"})
+
+
+@lru_cache(maxsize=1)
+def _get_retriever():
+    """Reuse the embedding model and Chroma collection for the whole process."""
+    return Retriever()
+
+
+_HASH_PATTERN = re.compile(r"\b(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\b")
+_IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_DOMAIN_PATTERN = re.compile(r"\b[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b")
+_WINDOWS_PATH_PATTERN = re.compile(r"[A-Za-z]:\\[^\r\n\"'<>|]+")
+_FILE_PATTERN = re.compile(
+    r"\b[^\s\\/:*?\"<>|]+\.(?:bat|cmd|dll|doc|docx|exe|hta|js|lnk|msi|pdf|ps1|py|rar|sys|tmp|vbs|xls|xlsx|zip)\b",
+    re.IGNORECASE,
+)
+
+_FILE_SUFFIXES = {
+    "bat", "cmd", "dll", "doc", "docx", "exe", "hta", "js", "json", "lnk",
+    "log", "msi", "pdf", "ps1", "py", "rar", "sys", "tmp", "txt", "vbs",
+    "xls", "xlsx", "zip",
+}
+
+
+def _parse_tool_text(text):
+    if isinstance(text, (dict, list)):
+        return text
+    try:
+        return json.loads(str(text))
+    except (TypeError, json.JSONDecodeError):
+        return {"raw_text": str(text)}
+
+
+def _flatten_strings(value, output):
+    if isinstance(value, str):
+        output.append(value)
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _flatten_strings(item, output)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _flatten_strings(item, output)
+
+
+def _looks_like_file(value):
+    suffix = value.rsplit(".", 1)[-1].lower() if "." in value else ""
+    return suffix in _FILE_SUFFIXES
+
+
+def _defang_to_plain(value):
+    return (
+        str(value)
+        .replace("[.]", ".")
+        .replace("(.)", ".")
+        .replace("hxxps://", "https://")
+        .replace("hxxp://", "http://")
+    )
+
+
+def _normalize_inventory_entries(entries):
+    values = set()
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            value = entry.get("value")
+        else:
+            value = entry
+        if value not in (None, "", [], {}):
+            values.add(str(value).strip())
+    return values
+
+
+def _embedded_observable_inventory(payload):
+    if isinstance(payload, dict):
+        inventory = payload.get("observable_inventory")
+        if isinstance(inventory, dict):
+            return {
+                key: _normalize_inventory_entries(entries)
+                for key, entries in inventory.items()
+            }
+    return {}
+
+
+def _events_from_payload(payload):
+    if isinstance(payload, dict):
+        if isinstance(payload.get("events"), list):
+            return payload["events"]
+        if isinstance(payload.get("evidence_view"), dict):
+            return []
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def _extract_observables_from_text(text):
+    normalized_text = _defang_to_plain(text)
+    urls = {value.rstrip(".,;:)") for value in _URL_PATTERN.findall(normalized_text)}
+    ips = set()
+    for candidate in _IP_PATTERN.findall(normalized_text):
+        try:
+            ips.add(str(ipaddress.ip_address(candidate)))
+        except ValueError:
+            continue
+
+    domains = set()
+    for candidate in _DOMAIN_PATTERN.findall(normalized_text):
+        candidate = candidate.lower().rstrip(".,;:)")
+        if candidate in ips or _looks_like_file(candidate):
+            continue
+        domains.add(candidate)
+
+    hashes = defaultdict(set)
+    for value in _HASH_PATTERN.findall(normalized_text):
+        hash_type = {32: "md5", 40: "sha1", 64: "sha256"}[len(value)]
+        hashes[hash_type].add(value.lower())
+
+    observables = {
+        "ip": ips,
+        "domain": domains,
+        "url": urls,
+        "file": {value.rstrip(".,;:)") for value in _FILE_PATTERN.findall(normalized_text)},
+        "path": {value.rstrip(".,;:)") for value in _WINDOWS_PATH_PATTERN.findall(normalized_text)},
+    }
+    observables.update(hashes)
+    return {key: values for key, values in observables.items() if values}
+
+
+def _collect_event_entities(event, entities):
+    if not isinstance(event, dict):
+        return
+
+    host_name = (((event.get("host") or {}).get("name")) if isinstance(event.get("host"), dict) else None)
+    if host_name:
+        entities["hosts"].add(str(host_name))
+
+    user_value = event.get("user")
+    if isinstance(user_value, dict):
+        for key in ("name", "domain"):
+            if user_value.get(key):
+                entities["users"].add(str(user_value[key]))
+        if user_value.get("domain") and user_value.get("name"):
+            entities["users"].add(f"{user_value['domain']}\\{user_value['name']}")
+    elif user_value:
+        entities["users"].add(str(user_value))
+
+    process_value = event.get("process")
+    if isinstance(process_value, dict):
+        for key in ("name", "executable", "parent.name", "parent.executable"):
+            current = process_value
+            for part in key.split("."):
+                if not isinstance(current, dict):
+                    current = None
+                    break
+                current = current.get(part)
+            if current:
+                entities["processes"].add(str(current))
+        if process_value.get("command_line"):
+            entities["commands"].add(str(process_value["command_line"]))
+
+    file_value = event.get("file")
+    if isinstance(file_value, dict):
+        for key in ("name", "path"):
+            if file_value.get(key):
+                entities["files"].add(str(file_value[key]))
+
+    registry_value = event.get("registry")
+    if isinstance(registry_value, dict):
+        for key in ("path", "key", "value"):
+            if registry_value.get(key):
+                entities["registry"].add(str(registry_value[key]))
+
+
+def _deterministic_rex(text):
+    payload = _parse_tool_text(text)
+    inventory = _embedded_observable_inventory(payload)
+
+    string_parts = []
+    _flatten_strings(payload, string_parts)
+    fallback = _extract_observables_from_text("\n".join(string_parts))
+
+    merged = defaultdict(set)
+    for source in (fallback, inventory):
+        for key, values in source.items():
+            merged[key].update(str(value).strip() for value in values if str(value).strip())
+
+    timestamps = set()
+    for event in _events_from_payload(payload):
+        if isinstance(event, dict) and event.get("timestamp"):
+            timestamps.add(str(event["timestamp"]))
+    timestamps.update(re.findall(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\b", "\n".join(string_parts)))
+
+    return {
+        "ip_addresses": sorted(merged.get("ip", set())),
+        "domains": sorted(merged.get("domain", set())),
+        "urls": sorted(merged.get("url", set())),
+        "file_hashes": {
+            "md5": sorted(merged.get("md5", set())),
+            "sha1": sorted(merged.get("sha1", set())),
+            "sha256": sorted(merged.get("sha256", set())),
+        },
+        "files": sorted(merged.get("file", set())),
+        "paths": sorted(merged.get("path", set())),
+        "timestamps": sorted(timestamps),
+        "extraction_mode": "deterministic_local",
+    }
+
+
+def _deterministic_ner(text):
+    payload = _parse_tool_text(text)
+    rex = _deterministic_rex(text)
+    entities = defaultdict(set)
+
+    for event in _events_from_payload(payload):
+        _collect_event_entities(event, entities)
+
+    for value in rex["files"]:
+        lowered = value.lower()
+        if lowered.endswith((".exe", ".dll", ".bat", ".cmd", ".ps1", ".vbs", ".js")):
+            entities["malware_tool"].add(value)
+        else:
+            entities["files"].add(value)
+    for value in rex["paths"]:
+        entities["files"].add(value)
+
+    infrastructure = {
+        "ips": rex["ip_addresses"],
+        "domains": rex["domains"],
+        "urls": rex["urls"],
+        "hashes": rex["file_hashes"],
+    }
+
+    return {
+        "threat_actor": [],
+        "malware_tool": sorted(entities["malware_tool"] | entities["processes"]),
+        "vulnerability": [],
+        "infrastructure": infrastructure,
+        "hosts": sorted(entities["hosts"]),
+        "users": sorted(entities["users"]),
+        "processes": sorted(entities["processes"]),
+        "commands": sorted(entities["commands"]),
+        "files": sorted(entities["files"]),
+        "registry": sorted(entities["registry"]),
+        "extraction_mode": "deterministic_local",
+    }
+
+
+_SECURITY_LINE_KEYWORDS = (
+    "powershell", "cmd.exe", "rundll32", "ntdsutil", "lsass", "dumplsass",
+    "credential", "password", "hash", "defender", "set-mppreference",
+    "wmic", "psexec", "smb", "ftp", "curl", "download", "execute",
+    "process", "command", "network", "dns", "http", "https", "domain",
+    "ip", "exfil", "encrypt", "lockbit", "cobalt", "registry", "service",
+)
+
+
+def _event_to_summary_line(event):
+    if not isinstance(event, dict):
+        return str(event)
+
+    parts = []
+    for key in ("timestamp", "event.action", "message"):
+        current = event
+        for part in key.split("."):
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(part)
+        if current:
+            parts.append(str(current))
+
+    host = event.get("host")
+    if isinstance(host, dict) and host.get("name"):
+        parts.append(f"host={host['name']}")
+
+    process_value = event.get("process")
+    if isinstance(process_value, dict):
+        if process_value.get("name"):
+            parts.append(f"process={process_value['name']}")
+        if process_value.get("command_line"):
+            parts.append(f"cmd={process_value['command_line']}")
+
+    file_value = event.get("file")
+    if isinstance(file_value, dict):
+        file_bits = [str(file_value.get(key)) for key in ("path", "name") if file_value.get(key)]
+        if file_bits:
+            parts.append(f"file={' | '.join(file_bits)}")
+
+    destination = event.get("destination")
+    if isinstance(destination, dict):
+        dest_bits = [str(destination.get(key)) for key in ("ip", "domain", "port") if destination.get(key)]
+        if dest_bits:
+            parts.append(f"dest={' | '.join(dest_bits)}")
+
+    return " ; ".join(parts)
+
+
+def _security_relevant_lines(text, max_lines=12):
+    payload = _parse_tool_text(text)
+    events = _events_from_payload(payload)
+    if events:
+        lines = [_event_to_summary_line(event) for event in events]
+    else:
+        string_parts = []
+        _flatten_strings(payload, string_parts)
+        lines = []
+        for part in string_parts:
+            lines.extend(str(part).splitlines())
+
+    scored = []
+    for index, line in enumerate(lines):
+        clean = re.sub(r"\s+", " ", str(line)).strip()
+        if not clean:
+            continue
+        lowered = clean.lower()
+        score = sum(1 for keyword in _SECURITY_LINE_KEYWORDS if keyword in lowered)
+        score += len(_HASH_PATTERN.findall(clean))
+        score += len(_IP_PATTERN.findall(clean))
+        if score > 0:
+            scored.append((score, index, clean))
+
+    if not scored:
+        return [re.sub(r"\s+", " ", str(line)).strip() for line in lines[:max_lines] if str(line).strip()]
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    selected = sorted(scored[:max_lines], key=lambda item: item[1])
+    return [line for _, _, line in selected]
+
+
+def _deterministic_sum(text):
+    payload = _parse_tool_text(text)
+    rex = _deterministic_rex(text)
+    highlights = _security_relevant_lines(text, max_lines=10)
+
+    observable_counts = {
+        "ips": len(rex.get("ip_addresses", [])),
+        "domains": len(rex.get("domains", [])),
+        "urls": len(rex.get("urls", [])),
+        "files": len(rex.get("files", [])),
+        "paths": len(rex.get("paths", [])),
+        "hashes": sum(len(values) for values in rex.get("file_hashes", {}).values()),
+    }
+    nonzero_counts = ", ".join(
+        f"{key}={value}" for key, value in observable_counts.items() if value
+    ) or "no explicit observables extracted"
+
+    timeline = rex.get("timestamps", [])
+    timeline_text = ""
+    if timeline:
+        timeline_text = f" Timeline spans {timeline[0]} to {timeline[-1]}."
+
+    highlights_text = " Key evidence: " + " | ".join(highlights[:5]) if highlights else ""
+    event_count = len(_events_from_payload(payload))
+    event_text = f"{event_count} event(s)" if event_count else "the supplied text"
+
+    return (
+        f"Local evidence summary over {event_text}: extracted {nonzero_counts}."
+        f"{timeline_text}{highlights_text}"
+    )
+
+
+def _deterministic_spa(text):
+    lines = _security_relevant_lines(text, max_lines=8)
+    if not lines:
+        return "No explicit attack-technique span was found in the supplied text."
+    return "\n".join(f"- {line}" for line in lines)
 
 @tool
 def ner_tool(text: str):
@@ -49,7 +422,7 @@ def ner_tool(text: str):
     ])
     
     # Sử dụng JsonOutputParser để đảm bảo đầu ra là JSON sạch, không lẫn text thừa
-    chain = prompt | shared_llm | JsonOutputParser()
+    chain = prompt | json_shared_llm | JsonOutputParser()
     
     try:
         return chain.invoke({"text": text})
@@ -87,7 +460,7 @@ def rex_tool(text: str):
         ("human", instructions)
     ])
     
-    chain = prompt | shared_llm | JsonOutputParser()
+    chain = prompt | json_shared_llm | JsonOutputParser()
     return chain.invoke({"text": text})
 
 @tool
@@ -123,7 +496,7 @@ def rag_tool(topic: str):
     
     # Bước B: Nạp Query đó vào Retriever
     # Retriever sẽ tìm trong database (MITRE ATT&CK, NVD, Exploit-DB).
-    retriever = Retriever() 
+    retriever = _get_retriever()
     search_results = retriever.search(structured_query)
     
     # Trả về cả query và kết quả truy xuất
@@ -198,7 +571,7 @@ def sim_tool(phrase1: str, phrase2: str):
     ])
 
     # Sử dụng JsonOutputParser để lấy đúng cấu trúc: match, confidence, justification
-    chain = prompt | shared_llm | JsonOutputParser()
+    chain = prompt | json_shared_llm | JsonOutputParser()
     
     return chain.invoke({"phrase1": phrase1, "phrase2": phrase2})
 
@@ -232,7 +605,7 @@ def map_tool(text: str):
     ])
 
     # Trả về danh sách JSON chứa các triples và điểm tin cậy
-    chain = prompt | shared_llm | JsonOutputParser()
+    chain = prompt | json_shared_llm | JsonOutputParser()
     
     return chain.invoke({"text": text})
 
@@ -297,7 +670,7 @@ def cls_tool(text: str, category: str):
         ("human", instructions)
     ])
     
-    chain = prompt | shared_llm | JsonOutputParser()
+    chain = prompt | json_shared_llm | JsonOutputParser()
     return chain.invoke({"text": text, "category": category})
 
 @tool

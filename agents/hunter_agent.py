@@ -111,6 +111,19 @@ class HunterAgent:
                 for attempt in range(max_tool_retries + 1):
                     task_messages.append(HumanMessage(content=build_hunter_tool_instruction(tool_name)))
                     ai_msg = tool_llm.invoke(task_messages)
+
+                    # LangChain may preserve malformed provider tool calls in
+                    # additional_kwargs/invalid_tool_calls while omitting them from
+                    # ai_msg.tool_calls. Do not add such an assistant message to the
+                    # conversation: OpenAI would require a ToolMessage for every raw
+                    # tool_call_id and reject the next retry with HTTP 400.
+                    if self._has_unresolved_tool_calls(ai_msg):
+                        task_messages.append(HumanMessage(content=build_hunter_retry_instruction(
+                            tool_name,
+                            attempt + 1,
+                        )))
+                        continue
+
                     task_messages.append(ai_msg)
 
                     for tool_call in ai_msg.tool_calls or []:
@@ -158,8 +171,6 @@ class HunterAgent:
                                 tool_name,
                                 tool_output,
                                 raw_log,
-                                cache_status,
-                                cache_key,
                             )
                             output_text = json.dumps(output_payload, indent=2, ensure_ascii=False)
                             tool_results.append({
@@ -205,7 +216,11 @@ class HunterAgent:
                         ),
                     })
 
-            tool_audit = json.dumps(tool_results, indent=2, ensure_ascii=False)
+            tool_audit = json.dumps(
+                self._build_compact_tool_audit(tool_results),
+                indent=2,
+                ensure_ascii=False,
+            )
             task_messages.append(HumanMessage(content=build_hunter_final_instruction(tool_audit)))
             final_msg = self.base_llm.invoke(task_messages)
             final_content = (
@@ -226,47 +241,109 @@ class HunterAgent:
         return run_history
 
     def _build_effective_tool_args(self, tool_name, tool_args, raw_log):
-        if tool_name in {"ner_tool", "rex_tool"}:
+        text_value = (tool_args or {}).get("text") if isinstance(tool_args, dict) else None
+        if tool_name in {"ner_tool", "rex_tool", "sum_tool", "spa_tool"} and not text_value:
             return {"text": raw_log}
         return dict(tool_args or {})
+
+    def _has_unresolved_tool_calls(self, ai_msg):
+        invalid_calls = getattr(ai_msg, "invalid_tool_calls", None) or []
+        if invalid_calls:
+            return True
+
+        parsed_ids = {
+            tool_call.get("id")
+            for tool_call in (getattr(ai_msg, "tool_calls", None) or [])
+            if tool_call.get("id")
+        }
+        raw_calls = (getattr(ai_msg, "additional_kwargs", None) or {}).get("tool_calls", [])
+        raw_ids = {
+            tool_call.get("id")
+            for tool_call in raw_calls
+            if isinstance(tool_call, dict) and tool_call.get("id")
+        }
+        return bool(raw_ids - parsed_ids)
 
     def _tool_cache_key(self, tool_name, tool_args):
         normalized_args = json.dumps(tool_args, sort_keys=True, ensure_ascii=False, default=str)
         digest = hashlib.sha256(normalized_args.encode("utf-8")).hexdigest()
         return f"{tool_name}:{digest}"
 
-    def _build_tool_output_payload(self, tool_name, tool_output, raw_log, cache_status, cache_key):
+    def _build_tool_output_payload(self, tool_name, tool_output, raw_log):
+        sanitized_output = self._sanitize_tool_output(tool_output)
         payload = {
-            "cache": {
-                "status": cache_status,
-                "key": cache_key,
-            },
-            "tool_output": tool_output,
+            "tool_output": sanitized_output,
         }
         if tool_name in {"ner_tool", "rex_tool"}:
             payload["ioc_artifact_validation"] = self._validate_iocs_against_artifact(
-                tool_output,
+                sanitized_output,
                 raw_log,
             )
         return payload
 
+    def _sanitize_tool_output(self, value):
+        """Remove provider reasoning blocks before they enter prompts or DAG outputs."""
+        if isinstance(value, dict):
+            if value.get("type") in {"thinking", "reasoning"}:
+                return None
+            sanitized = {}
+            for key, item in value.items():
+                if key in {"thinking", "reasoning"}:
+                    continue
+                clean_item = self._sanitize_tool_output(item)
+                if clean_item not in (None, "", [], {}):
+                    sanitized[key] = clean_item
+            if sanitized.get("type") == "text" and set(sanitized).issubset({"type", "text"}):
+                return sanitized.get("text", "")
+            return sanitized
+        if isinstance(value, (list, tuple, set)):
+            sanitized = [self._sanitize_tool_output(item) for item in value]
+            return [item for item in sanitized if item not in (None, "", [], {})]
+        return value
+
+    def _build_compact_tool_audit(self, tool_results, excerpt_chars=500):
+        audit = []
+        for result in tool_results:
+            output = str(result.get("output", ""))
+            item = {
+                "tool": result.get("tool"),
+                "status": result.get("status"),
+                "output_sha256": hashlib.sha256(output.encode("utf-8")).hexdigest(),
+            }
+            if result.get("cache_status"):
+                item["cache_status"] = result["cache_status"]
+            if output:
+                item["output_excerpt"] = output[:excerpt_chars]
+            audit.append(item)
+        return audit
+
     def _validate_iocs_against_artifact(self, tool_output, raw_log):
         candidates = sorted(self._extract_ioc_candidates(tool_output))
-        raw_lower = raw_log.lower()
+        raw_lower = self._defang_to_plain(raw_log).lower()
         supported = []
         unsupported = []
 
         for candidate in candidates:
-            if candidate.lower() in raw_lower:
+            normalized_candidate = self._defang_to_plain(candidate).lower()
+            if normalized_candidate in raw_lower:
                 supported.append(candidate)
             else:
                 unsupported.append(candidate)
 
         return {
-            "policy": "NER/REX IOC candidates must appear verbatim in the raw artifact.",
+            "policy": "NER/REX IOC candidates must appear in the raw artifact after normalizing common defanged forms.",
             "supported_iocs": supported,
             "unsupported_iocs": unsupported,
         }
+
+    def _defang_to_plain(self, value):
+        return (
+            str(value)
+            .replace("[.]", ".")
+            .replace("(.)", ".")
+            .replace("hxxps://", "https://")
+            .replace("hxxp://", "http://")
+        )
 
     def _extract_ioc_candidates(self, value):
         text_parts = []

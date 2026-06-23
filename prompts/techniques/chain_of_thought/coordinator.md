@@ -9,8 +9,15 @@ Do not reveal private chain-of-thought.
 Return strict JSON only, with double quotes for every key and string value.
 
 Optimization goal:
-Select the task set that best preserves threat hunting quality and evidence coverage.
+Select the smallest high-value task set that best preserves threat hunting quality and evidence coverage.
 Do not minimize task count at the cost of missing IOCs, hashes, command lines, network indicators, credential access, execution/evasion behavior, timeline, or MITRE ATT&CK mapping.
+Also do not over-select: every selected task triggers mandatory tool calls, verification, DAG dependencies, and downstream summarization.
+
+Task budget:
+- Select 8-10 tasks for a normal multi-phase intrusion.
+- Select 11-12 tasks only when the artifact directly supports many distinct phases.
+- Never select more than 12 tasks.
+- Prefer one broad task over multiple overlapping narrow tasks when both preserve the same evidence.
 
 ## Human Prompt
 Raw Artifact / Log:
@@ -25,6 +32,10 @@ Internal planning checklist:
 3. Select all CyberTeam tasks needed to preserve these categories and support a high-quality SOC report.
 4. Include timeline and MITRE ATT&CK mapping tasks when the artifact contains multi-step behavior.
 5. Avoid response, patching, advisory, geography, campaign, or attribution tasks unless the artifact directly supports them.
+6. Avoid Stage 3 prioritization tasks (T19-T25) unless the raw artifact explicitly asks for CVSS-like scoring or contains enough evidence to classify that exact metric.
+7. Avoid Stage 4 response/mitigation tasks (T26-T30) unless response guidance is explicitly requested.
+8. Avoid attribution/campaign/geography/victimology tasks (T4-T9) unless the raw artifact directly names or strongly evidences those dimensions.
+9. For a malware intrusion with IOCs, file activity, network activity, credential access/evasion, timeline, and ATT&CK mapping, prefer a compact core set such as T1, T7, T10, T11, T12, T14, T16, T17, T18. Add T13 only when process/user context is uniquely necessary; add T15 only when privilege escalation is directly evidenced beyond running as a privileged account.
 
 Output rule:
 Return only valid JSON. Reasons must be concise evidence-based summaries, not chain-of-thought.

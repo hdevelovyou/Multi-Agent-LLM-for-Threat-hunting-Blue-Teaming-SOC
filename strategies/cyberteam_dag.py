@@ -73,11 +73,12 @@ def topological_sort(task_ids):
     return ordered
 
 
-def build_initial_dag_state(entity_context):
+def build_initial_dag_state(entity_context, evidence_store=None):
     return {
         "verified_outputs": {},
         "failed_outputs": {},
         "entity_context_available": bool(entity_context),
+        "deterministic_evidence_available": bool(evidence_store),
     }
 
 
@@ -100,25 +101,26 @@ def build_upstream_context(task, dag_state):
         "verified_upstream_findings": verified,
         "failed_upstream_dependencies": failed,
         "deterministic_entity_context_available": dag_state.get("entity_context_available", False),
+        "deterministic_evidence_available": dag_state.get("deterministic_evidence_available", False),
     }
-    return json.dumps(context, indent=2, ensure_ascii=False)
+    return json.dumps(context, ensure_ascii=False, separators=(",", ":"))
 
 
-def record_task_success(dag_state, task, hunter_output):
+def record_task_success(dag_state, task, hunter_output, artifact=None):
     dag_state["verified_outputs"][task["id"]] = {
         "task_id": task["id"],
         "task_name": task["name"],
         "produces": task.get("produces", []),
-        "result": hunter_output,
+        "artifact": artifact if artifact is not None else {"summary": str(hunter_output)[:2400]},
     }
 
 
-def record_task_failure(dag_state, task, hunter_output, reason):
+def record_task_failure(dag_state, task, hunter_output, reason, artifact=None):
     dag_state["failed_outputs"][task["id"]] = {
         "task_id": task["id"],
         "task_name": task["name"],
-        "reason": str(reason),
-        "last_result": hunter_output,
+        "reason": str(reason)[:800],
+        "artifact": artifact if artifact is not None else {"summary": str(hunter_output)[:1200]},
     }
 
 

@@ -52,7 +52,7 @@ Tool policy:
 - Prefer rex_tool for IP/domain/hash/timestamp extraction.
 - Prefer rag_tool/map_tool for MITRE ATT&CK TTP mapping.
 - If tool input is ambiguous, use the raw artifact/log, upstream DAG context, and the task target as the tool input.
-- For ner_tool and rex_tool, extract from the full raw artifact/log to preserve IOC recall.
+- For ner_tool and rex_tool, extract from the supplied task-scoped artifact/log to preserve task-relevant recall.
 
 Final answer requirements:
 - Follow the good patterns above.
@@ -60,6 +60,7 @@ Final answer requirements:
 - Include all observed IOCs relevant to this task, especially full MD5/SHA1/SHA256 hashes.
 - Include full URLs and IP:port composites when present.
 - Do not omit low-confidence or repeated-looking observables if they appear in the artifact; include them and mark confidence or context instead.
+- For T7, include Classification (malicious/suspicious/benign/unknown), Evidence/Event IDs, and Rationale. Keep benign values visible but separated from malicious/suspicious IOC candidates.
 - Include MITRE ATT&CK IDs in Txxxx/Txxxx.xxx format when behavior maps to a technique.
 - Include a clear Reasoning Summary and confidence.
 - State evidence gaps instead of guessing.

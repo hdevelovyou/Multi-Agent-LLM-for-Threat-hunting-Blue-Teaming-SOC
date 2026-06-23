@@ -134,7 +134,7 @@ def build_hunter_tool_instruction(tool_name):
         f"Call mandatory tool now: {tool_name}.\n"
         "Call exactly this tool once. Use the raw log, task target, coordinator reason, "
         "verified upstream DAG context, and reflexion context as the input basis. "
-        "For ner_tool and rex_tool, extract from the full raw artifact/log. "
+        "For ner_tool and rex_tool, extract from the supplied task-scoped artifact/log. "
         "Do not produce the final answer yet."
     )
 
@@ -184,8 +184,9 @@ def build_reporter_prompt(analysis_content, evidence_context=None, entity_contex
     entity_block = ""
     if entity_context:
         entity_block = (
-            "\n\nDeterministic entity inventory extracted directly from the raw artifacts. "
-            "Use this as the minimum observable IOC set to preserve in the final indicator tables:\n"
+            "\n\nCurated suspicious/malicious IOC set supplied by the pipeline before report generation. "
+            "Use this curated set as the source of truth for the final Indicators of Compromise table. "
+            "Do not add contextual benign utilities, private IPs, user accounts, or generic system processes to that IOC table:\n"
             f"{entity_context}\n"
         )
 
