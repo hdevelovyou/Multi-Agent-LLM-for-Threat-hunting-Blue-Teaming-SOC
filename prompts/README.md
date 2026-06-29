@@ -27,6 +27,20 @@ prompts/
       verifier.md
       analyst.md
       reporter.md
+  debate_techniques/
+    role_based_zero_shot/
+      coordinator.md
+      hunter.md
+      verifier.md
+      analyst.md
+      reporter.md
+      feedback.md
+      judge.md
+      soft_test.md
+    chain_of_thought/
+      ...
+    example_based_fewshot/
+      ...
 ```
 
 Every prompt file contains:
@@ -58,6 +72,13 @@ $env:PROMPT_TECHNIQUE="chain_of_thought"
 python main.py
 ```
 
+Run the example-based few-shot variant:
+
+```powershell
+$env:PROMPT_TECHNIQUE="example_based_fewshot"
+python main.py
+```
+
 Or override one agent:
 
 ```powershell
@@ -76,6 +97,63 @@ Agent-specific variables:
 Agent-specific variables override `PROMPT_TECHNIQUE`. Unknown values fall back
 to `role_based_zero_shot`.
 
+Useful aliases accepted by `agent_prompts.py`:
+
+- Chain-of-thought: `chain_of_thought`, `chain-of-thought`, `cot`
+- Example-based few-shot: `example_based_fewshot`, `example-based-fewshot`, `fewshot`, `few_shot`
+
+Current prompt variants share the same runtime architecture:
+
+- Coordinator returns strict JSON and targets 8-10 tasks for normal multi-phase intrusions, max 12.
+- Hunter preserves high-recall task evidence; T7 separates malicious/suspicious IOC candidates from benign/contextual observables.
+- Analyst treats entity context as baseline observability/audit context, uses the TTP Relations Graph as controlled candidate guidance, and emits a TTP Hypothesis Promotion Table.
+- Reporter treats the curated suspicious/malicious IOC set as the source of truth for the final IOC table.
+
 The current `main.py` collaboration flow remains hierarchical. Debate-based
-collaboration is scaffolded under `strategies/debate_strategy.py` but is not
-wired into runtime execution yet.
+collaboration is implemented in `debate_main.py` and uses the separate
+`prompts/debate_techniques/` prompt family.
+
+## Debate-Based Selection
+
+Run the debate-based workflow with role-based zero-shot debate prompts:
+
+```powershell
+$env:PROMPT_ARCHITECTURE="debate_based"
+$env:PROMPT_TECHNIQUE="role_based_zero_shot"
+python debate_main.py
+```
+
+Run with example-based few-shot debate prompts:
+
+```powershell
+$env:PROMPT_ARCHITECTURE="debate_based"
+$env:PROMPT_TECHNIQUE="example_based_fewshot"
+python debate_main.py
+```
+
+Run with chain-of-thought debate prompts:
+
+```powershell
+$env:PROMPT_ARCHITECTURE="debate_based"
+$env:PROMPT_TECHNIQUE="chain_of_thought"
+python debate_main.py
+```
+
+Run the lightweight debate feedback smoke test:
+
+```powershell
+$env:PROMPT_ARCHITECTURE="debate_based"
+$env:DEBATE_SOFT_TEST="1"
+python debate_main.py
+```
+
+Useful debate runtime variables:
+
+- `DEBATE_TIMEOUT_SECONDS`: default `300`; after this, unresolved disagreement is escalated to Judge.
+- `DEBATE_FEEDBACK_MODEL`: default `gpt-4.1-mini`.
+- `DEBATE_JUDGE_MODEL`: default `gpt-4.1-mini`.
+- `DEBATE_MODEL_TIMEOUT_SECONDS`: default `300`.
+
+The debate workflow reorders agent communication and feedback only. It reuses
+the same EvidenceExtractor, IOC Curator, TTP Relations Graph, MITRE mapper, and
+evaluation logic as the hierarchical workflow.

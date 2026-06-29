@@ -9,6 +9,8 @@ CHAIN_OF_THOUGHT = "chain_of_thought"
 EXAMPLE_BASED_FEWSHOT = "example_based_fewshot"
 
 _PROMPTS_DIR = Path(__file__).resolve().parent
+_DEFAULT_PROMPT_FAMILY = "techniques"
+_DEBATE_PROMPT_FAMILY = "debate_techniques"
 
 _ALIASES = {
     "role": ROLE_BASED_ZERO_SHOT,
@@ -42,6 +44,22 @@ def resolve_prompt_technique(agent_name=None):
     return ROLE_BASED_ZERO_SHOT
 
 
+def resolve_prompt_family():
+    """Select hierarchical or debate prompt family without changing runtime agents."""
+    explicit_family = os.getenv("PROMPT_FAMILY")
+    if explicit_family:
+        normalized = explicit_family.strip().lower().replace("-", "_")
+        if normalized in {"debate", "debate_based", "debate_techniques"}:
+            return _DEBATE_PROMPT_FAMILY
+        return _DEFAULT_PROMPT_FAMILY
+
+    architecture = os.getenv("PROMPT_ARCHITECTURE", "").strip().lower().replace("-", "_")
+    if architecture in {"debate", "debate_based"}:
+        return _DEBATE_PROMPT_FAMILY
+
+    return _DEFAULT_PROMPT_FAMILY
+
+
 def _extract_section(text, heading):
     marker = f"## {heading}"
     start = text.find(marker)
@@ -62,14 +80,17 @@ def _extract_section(text, heading):
 
 def load_prompt_pair(agent_name):
     technique = resolve_prompt_technique(agent_name)
-    prompt_path = _PROMPTS_DIR / "techniques" / technique / f"{agent_name}.md"
+    family = resolve_prompt_family()
+    prompt_path = _PROMPTS_DIR / family / technique / f"{agent_name}.md"
     if not prompt_path.exists():
         raise FileNotFoundError(
-            f"Prompt file not found for agent='{agent_name}', technique='{technique}': {prompt_path}"
+            f"Prompt file not found for agent='{agent_name}', family='{family}', "
+            f"technique='{technique}': {prompt_path}"
         )
 
     text = prompt_path.read_text(encoding="utf-8")
     return {
+        "family": family,
         "technique": technique,
         "path": str(prompt_path),
         "system": _extract_section(text, "System Prompt"),
@@ -195,6 +216,53 @@ def build_reporter_prompt(analysis_content, evidence_context=None, entity_contex
         analysis_content=analysis_content,
         evidence_block=evidence_block,
         entity_block=entity_block,
+    )
+    return [
+        SystemMessage(content=prompt["system"]),
+        HumanMessage(content=human_prompt),
+    ]
+
+
+def build_debate_feedback_prompt(stage, reviewer_role, prior_role, prior_output, context, focus):
+    prompt = load_prompt_pair("feedback")
+    human_prompt = _format(
+        prompt["human"],
+        stage=stage,
+        reviewer_role=reviewer_role,
+        prior_role=prior_role,
+        prior_output=prior_output,
+        context=context,
+        focus=focus,
+    )
+    return [
+        SystemMessage(content=prompt["system"]),
+        HumanMessage(content=human_prompt),
+    ]
+
+
+def build_debate_judge_prompt(stage, first_role, second_role, first_output, second_output, context):
+    prompt = load_prompt_pair("judge")
+    human_prompt = _format(
+        prompt["human"],
+        stage=stage,
+        first_role=first_role,
+        second_role=second_role,
+        first_output=first_output,
+        second_output=second_output,
+        context=context,
+    )
+    return [
+        SystemMessage(content=prompt["system"]),
+        HumanMessage(content=human_prompt),
+    ]
+
+
+def build_debate_soft_test_prompt(test_message, expected_answer):
+    prompt = load_prompt_pair("soft_test")
+    human_prompt = _format(
+        prompt["human"],
+        test_message=test_message,
+        expected_answer=expected_answer,
     )
     return [
         SystemMessage(content=prompt["system"]),

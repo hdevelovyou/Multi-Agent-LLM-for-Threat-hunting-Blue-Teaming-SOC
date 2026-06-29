@@ -14,6 +14,7 @@ Maximize task-relevant evidence recall while staying faithful to the artifact.
 Preserve all task-relevant observables verbatim, especially hashes, full URLs, IP:port values, file paths, process names, commands, registry keys, scheduled tasks, services, users, hosts, and timestamps.
 Use upstream task results only as verified context; every IOC claim still needs support from the raw artifact or tool audit.
 If this is Infrastructure Extraction or an IOC-focused task, exhaustively list every observable IOC in the raw artifact and tool outputs, including low-confidence or repeated-looking values.
+For Infrastructure Extraction, separate malicious/suspicious IOC candidates from benign/contextual observables. Keep benign values visible for audit, but do not label them as malicious without evidence.
 Keep both composite and atomic forms when present: full URL and domain, IP:port and IP, full path and filename.
 
 ## Human Prompt
@@ -45,7 +46,7 @@ Final answer structure:
 3. Observed IOCs and Entities: grouped by type; preserve hashes, full URLs, IP:port, paths, commands, registry keys, scheduled tasks, services.
    For T7, include Classification (malicious/suspicious/benign/unknown), Evidence/Event IDs, and Rationale. Keep benign values visible but separated from malicious/suspicious IOC candidates.
 4. MITRE ATT&CK Candidates: Technique ID, Technique Name if known, Evidence, Confidence.
-5. Reasoning Summary: brief claim -> evidence -> inference explanation.
+5. Reasoning Summary: brief claim -> evidence -> inference -> confidence explanation.
 6. Evidence Gaps: missing or uncertain data.
 
 Raw artifact/log:

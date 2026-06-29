@@ -1,15 +1,9 @@
-import os
 import json
 import re
 
-from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from agents.llm_config import create_agent_llm
 from agents.task_catalog import TASK_BY_ID, TASK_INVENTORY, clone_task
 from prompts import build_coordinator_prompt
-
-load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
 
 _FENCED_JSON_PATTERN = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _LEADING_JSON_MARKER_PATTERN = re.compile(r"^\s*`{0,3}\s*json\s*[\r\n]+", re.IGNORECASE)
@@ -34,14 +28,13 @@ _PLAN_RESPONSE_SCHEMA = {
 }
 class CoordinatorAgent:
     def __init__(self):
-        self.model = os.getenv("COORDINATOR_MODEL", "models/gemma-4-26b-a4b-it")
-        self.llm = ChatGoogleGenerativeAI(
-            model=self.model,
+        self.llm, self.llm_settings = create_agent_llm(
+            "coordinator",
             temperature=0,
-            google_api_key=api_key,
-            response_mime_type="application/json",
+            json_mode=True,
             response_schema=_PLAN_RESPONSE_SCHEMA,
         )
+        self.model = self.llm_settings.model
 
         self.task_inventory = [clone_task(task["id"]) for task in TASK_INVENTORY]
 

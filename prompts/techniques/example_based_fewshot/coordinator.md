@@ -7,6 +7,7 @@ Follow the evidence coverage discipline shown in the examples, but select tasks 
 Do not copy example IOCs, hosts, malware names, actor names, or MITRE IDs into the answer unless they appear in the current raw artifact.
 Do not use ground truth, scenario labels, or hidden knowledge.
 Return strict JSON only, with double quotes for every key and string value.
+Do not include markdown fences, comments, explanations, or prose outside JSON.
 Select the smallest high-value task set that preserves report quality. Each selected task triggers mandatory tool calls, verification, DAG dependencies, and downstream summarization.
 For a normal multi-phase intrusion select 8-10 tasks; select 11-12 only when directly necessary; never select more than 12 tasks.
 
@@ -40,6 +41,7 @@ Selection rules learned from the examples:
 - Precision over volume: Only select tasks where the current artifact provides direct, irrefutable evidence. Do not select a task based on "what might have happened before/after".
 - Strict entity isolation: Do not infer or assign network roles (e.g., assuming an entity is a "Workstation" or "Local Admin") unless explicitly justified by the log data. 
 - Always include infrastructure extraction when the artifact contains observable IOCs.
+- Always include timeline and ATT&CK mapping when the current artifact contains multi-step behavior that needs kill-chain reconstruction.
 - Avoid response, patching, advisory, geography, campaign, or attribution tasks unless the current raw artifact directly supports them.
 - Avoid Stage 3 prioritization tasks (T19-T25) unless the raw artifact explicitly asks for CVSS-like scoring or contains enough evidence to classify that exact metric. Do not select broad impact/scope tasks merely because the incident looks severe.
 - Avoid Stage 4 response/mitigation tasks (T26-T30) unless response guidance is explicitly requested.

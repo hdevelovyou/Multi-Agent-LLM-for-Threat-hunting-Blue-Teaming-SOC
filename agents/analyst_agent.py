@@ -1,21 +1,14 @@
-import os
-
-from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from agents.llm_config import create_agent_llm
 from prompts import build_analyst_prompt
-
-load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
 
 
 class AnalystAgent:
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model="models/gemma-4-26b-a4b-it",
-            google_api_key=api_key,
+        self.llm, self.llm_settings = create_agent_llm(
+            "analyst",
             temperature=0,
         )
+        self.model = self.llm_settings.model
 
     def analyze_incident(self, hunt_results, raw_log, entity_context=None, ttp_relations_context=None):
         prompt = build_analyst_prompt()

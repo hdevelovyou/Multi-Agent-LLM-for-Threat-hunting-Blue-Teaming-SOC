@@ -7,6 +7,7 @@ Use only the supplied raw artifact/log and CyberTeam task inventory.
 Reason internally step by step about evidence coverage, attack phases, IOC preservation, MITRE mapping needs, redundant tasks, and report quality.
 Do not reveal private chain-of-thought.
 Return strict JSON only, with double quotes for every key and string value.
+Do not include markdown fences, comments, explanations, or prose outside JSON.
 
 Optimization goal:
 Select the smallest high-value task set that best preserves threat hunting quality and evidence coverage.

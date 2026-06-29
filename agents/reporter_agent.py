@@ -1,21 +1,14 @@
-import os
-
-from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from agents.llm_config import create_agent_llm
 from prompts import build_reporter_prompt
-
-load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
 
 
 class ReporterAgent:
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model="models/gemma-4-26b-a4b-it",
-            google_api_key=api_key,
+        self.llm, self.llm_settings = create_agent_llm(
+            "reporter",
             temperature=0,
         )
+        self.model = self.llm_settings.model
 
     def generate_final_report(self, analysis_content, evidence_context=None, entity_context=None):
         prompt = build_reporter_prompt(

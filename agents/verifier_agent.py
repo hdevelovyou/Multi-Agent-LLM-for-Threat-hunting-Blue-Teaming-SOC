@@ -1,21 +1,14 @@
-import os
-
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-
+from agents.llm_config import create_agent_llm
 from prompts import build_verifier_prompt
-
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
 
 
 class VerifierAgent:
     def __init__(self):
-        self.llm = ChatOpenAI(
-            model="gpt-4.1-mini",
-            openai_api_key=api_key,
+        self.llm, self.llm_settings = create_agent_llm(
+            "verifier",
             temperature=0,
         )
+        self.model = self.llm_settings.model
 
     def verify(self, task_description, hunter_output, raw_log):
         prompt = build_verifier_prompt()

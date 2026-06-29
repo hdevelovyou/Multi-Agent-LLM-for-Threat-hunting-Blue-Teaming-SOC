@@ -1,12 +1,10 @@
 import json
-import os
 import hashlib
 import re
-from dotenv import load_dotenv
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 
+from agents.llm_config import create_agent_llm
 from prompts import (
     build_hunter_final_instruction,
     build_hunter_initial_messages,
@@ -26,10 +24,6 @@ from tools.tools import (
     math_tool,
 )
 
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-
-
 class HunterAgent:
     def __init__(self):
         self.tools = [
@@ -44,11 +38,11 @@ class HunterAgent:
             math_tool,
         ]
 
-        self.base_llm = ChatOpenAI(
-            model="gpt-4.1-mini",
-            openai_api_key=api_key,
+        self.base_llm, self.llm_settings = create_agent_llm(
+            "hunter",
             temperature=0,
         )
+        self.model = self.llm_settings.model
 
         self.task_inventory = [clone_task(task["id"]) for task in TASK_INVENTORY]
 

@@ -12,6 +12,7 @@ Every conclusion must have evidence.
 Every task-relevant IOC must be preserved verbatim.
 Use upstream task results only as verified context; every IOC claim still needs support from the raw artifact or tool audit.
 If this is Infrastructure Extraction or an IOC-focused task, exhaustively list every observable IOC in the raw artifact and tool outputs.
+For Infrastructure Extraction, separate malicious/suspicious IOC candidates from benign/contextual observables. Keep benign values visible for audit, but do not label them as malicious without evidence.
 Keep both composite and atomic forms when present: full URL and domain, IP:port and IP, full path and filename.
 
 ## Human Prompt
@@ -62,7 +63,7 @@ Final answer requirements:
 - Do not omit low-confidence or repeated-looking observables if they appear in the artifact; include them and mark confidence or context instead.
 - For T7, include Classification (malicious/suspicious/benign/unknown), Evidence/Event IDs, and Rationale. Keep benign values visible but separated from malicious/suspicious IOC candidates.
 - Include MITRE ATT&CK IDs in Txxxx/Txxxx.xxx format when behavior maps to a technique.
-- Include a clear Reasoning Summary and confidence.
+- Include a clear Reasoning Summary using claim -> evidence -> inference -> confidence.
 - State evidence gaps instead of guessing.
 
 Raw artifact/log:

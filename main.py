@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from datetime import datetime
 
@@ -7,6 +8,7 @@ from langchain_community.callbacks.manager import get_openai_callback
 
 from agents.coordinator_agent import CoordinatorAgent
 from agents.hunter_agent import HunterAgent
+from agents.llm_config import get_llm_config_snapshot
 from agents.verifier_agent import VerifierAgent
 from agents.analyst_agent import AnalystAgent
 from agents.reporter_agent import ReporterAgent
@@ -175,6 +177,17 @@ def _compose_scoring_entities(report_entities, ioc_entities):
     return scoring_entities
 
 
+def _is_verifier_ok(check_result):
+    """Accept strict OK and OK-prefixed verifier explanations.
+
+    Verifier prompts ask for exactly OK, but LLMs sometimes return helpful text
+    such as "OK: all material claims are supported". Treat that as pass while
+    still rejecting FAIL/NOT OK and unrelated responses.
+    """
+    check_str = str(check_result or "").strip()
+    return bool(re.match(r"^OK(?:\b|[\s:.\-–—])", check_str, flags=re.IGNORECASE))
+
+
 def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
     start_time = time.time()
 
@@ -183,6 +196,15 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
     verifier = VerifierAgent()
     analyst = AnalystAgent()
     reporter = ReporterAgent()
+    llm_config = get_llm_config_snapshot([
+        "coordinator",
+        "hunter",
+        "verifier",
+        "analyst",
+        "reporter",
+        "tools",
+    ])
+    print(f"[LLM] Runtime configuration: {json.dumps(llm_config, ensure_ascii=False)}")
     evaluator = SOCEvaluator()
     reasoning_evaluator = ReasoningEvaluator()
     extractor = EvidenceExtractor()
@@ -259,7 +281,7 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
                     check_result = verifier.verify(task["name"], hunter_output, task_log)
                     check_str = str(check_result).strip()
 
-                    if check_str.upper() == "OK":
+                    if _is_verifier_ok(check_str):
                         print(f"    [VERIFIED] Task {task['id']} passed.")
                         final_results.append({
                             "task_id": task["id"],
@@ -454,10 +476,9 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
 
         results_t1 = evaluator.compare_entities(pre_entities, post_entities)
 
-        ground_truth_path = os.path.join(
-            "datasets",
-            "CobaltStrike_Lockbit",
-            "ground_truth.json",
+        ground_truth_path = os.getenv(
+            "GROUND_TRUTH_PATH",
+            os.path.join("datasets", "CobaltStrike_Lockbit", "ground_truth.json"),
         )
         with open(ground_truth_path, "r", encoding="utf-8") as f:
             ground_truth_data = json.load(f)
@@ -488,6 +509,7 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
         "metadata": {
             "test_date": timestamp,
             "latency_seconds": round(latency, 2),
+            "llm_config": llm_config,
             "openai_metrics": {
                 "input_tokens": total_input,
                 "output_tokens": total_output,
@@ -570,7 +592,10 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
 
 
 if __name__ == "__main__":
-    log_file_path = os.path.join("datasets", "CobaltStrike_Lockbit", "artifacts.json")
+    log_file_path = os.getenv(
+        "ARTIFACT_PATH",
+        os.path.join("datasets", "CobaltStrike_Lockbit", "artifacts.json"),
+    )
 
     try:
         with open(log_file_path, "r", encoding="utf-8") as f:
@@ -578,7 +603,10 @@ if __name__ == "__main__":
 
         print(f"[*] Loaded log from: {log_file_path}")
         log_payload = json.dumps(json.loads(log_payload), indent=2)
-        run_cyber_defense_system(log_payload, scenario_name="CobaltStrike_LockBit_Clean")
+        run_cyber_defense_system(
+            log_payload,
+            scenario_name=os.getenv("SCENARIO_NAME", "CobaltStrike_LockBit_Clean"),
+        )
 
     except FileNotFoundError:
         print(f"ERROR: File not found at {log_file_path}")

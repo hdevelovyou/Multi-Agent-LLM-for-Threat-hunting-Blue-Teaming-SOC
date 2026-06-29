@@ -1,9 +1,8 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from langchain_openai import ChatOpenAI
 from langchain.tools import tool
+from agents.llm_config import create_agent_llm
 from src.retriever import Retriever
-from dotenv import load_dotenv
 from functools import lru_cache
 from collections import defaultdict
 import ipaddress
@@ -11,13 +10,9 @@ import json
 import os
 import re
 
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-
-shared_llm = ChatOpenAI(
-    model="gpt-4.1-mini",
+shared_llm, shared_llm_settings = create_agent_llm(
+    "tools",
     temperature=0,
-    openai_api_key=api_key,
 )
 json_shared_llm = shared_llm.bind(response_format={"type": "json_object"})
 

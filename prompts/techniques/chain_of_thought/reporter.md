@@ -45,6 +45,7 @@ Mandatory evidence preservation rules:
 - Include every value from the curated suspicious/malicious IOC set.
 - Do not summarize IOC inventory with phrases like "including", "such as", or "etc."; enumerate the values.
 - Do not add benign/contextual values to the IOC table just because they appear in narrative evidence.
+- If a value appears in verified findings but not in the curated suspicious/malicious IOC set, keep it in narrative evidence only; do not add it to the final IOC table.
 - Include curated IPs, domains, filenames/process names, scripts, DLLs, and every curated MD5/SHA1/SHA256 hash.
 - Never shorten, mask, normalize away, or omit hashes. If a hash is present, write it verbatim.
 - Do not drop long command lines, long paths, or repeated-looking indicators; include them with the best available Evidence/Source.
