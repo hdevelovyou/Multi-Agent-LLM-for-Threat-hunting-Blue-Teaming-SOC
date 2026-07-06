@@ -18,10 +18,15 @@ from evaluation.reasoning_evaluator import ReasoningEvaluator
 from src.extractor import EvidenceExtractor
 from src.ioc_curator import IOCCurator
 from src.mitre_mapper import MitreMapper
+from src.orchestration_toggles import (
+    disabled_ttp_graph_context,
+    load_orchestration_toggles,
+)
 from src.ttp_relations_graph import TTPRelationsGraph
 from strategies.cyberteam_dag import (
     build_initial_dag_state,
     build_upstream_context,
+    coordinator_only_plan,
     dag_to_mermaid,
     expand_and_sort_plan,
     export_dag,
@@ -64,6 +69,7 @@ def _build_ttp_seed_audit(final_results, ttp_graph_context):
         })
 
     return {
+        "enabled": ttp_graph_context.get("enabled", True),
         "policy": (
             "TTP seeds are extracted from verified Hunter findings/results_str by technique-ID regex, "
             "filtered to technique IDs present in the local MITRE ATT&CK Enterprise dataset, and used only "
@@ -190,6 +196,8 @@ def _is_verifier_ok(check_result):
 
 def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
     start_time = time.time()
+    orchestration_toggles = load_orchestration_toggles()
+    orchestration_config = orchestration_toggles.snapshot()
 
     coordinator = CoordinatorAgent()
     hunter = HunterAgent()
@@ -209,13 +217,17 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
     reasoning_evaluator = ReasoningEvaluator()
     extractor = EvidenceExtractor()
     ioc_curator = IOCCurator()
-    ttp_graph = TTPRelationsGraph()
+    ttp_graph = TTPRelationsGraph() if orchestration_toggles.ttp_relations_graph else None
     summarizer = SummarizerAgent()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     scenario_id = f"{scenario_name}_{timestamp}"
     run_dir = os.path.join("runs", scenario_id)
     os.makedirs(run_dir, exist_ok=True)
+    orchestration_config_path = os.path.join(run_dir, "orchestration_config.json")
+    with open(orchestration_config_path, "w", encoding="utf-8") as f:
+        json.dump(orchestration_config, f, ensure_ascii=False, indent=2)
+    print(f"[RQ2] Orchestration toggles: {json.dumps(orchestration_config)}")
 
     final_results = []
 
@@ -231,15 +243,31 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
             json.dump(evidence_store, f, ensure_ascii=False, indent=2)
 
         coordinator_plan = coordinator.plan(log_data)
-        cyber_plan = expand_and_sort_plan(coordinator_plan)
+        cyber_plan = (
+            expand_and_sort_plan(coordinator_plan)
+            if orchestration_toggles.dag_orchestrator
+            else coordinator_only_plan(coordinator_plan)
+        )
         dag_state = build_initial_dag_state(entity_context, evidence_store=evidence_store)
 
-        print(
-            f"\n[Main] Coordinator selected {len(coordinator_plan)} task(s); "
-            f"DAG-expanded plan has {len(cyber_plan)} task(s)."
-        )
+        if orchestration_toggles.dag_orchestrator:
+            print(
+                f"\n[Main] Coordinator selected {len(coordinator_plan)} task(s); "
+                f"DAG-expanded plan has {len(cyber_plan)} task(s)."
+            )
+        else:
+            print(
+                f"\n[Main] DAG disabled; executing only {len(cyber_plan)} "
+                "Coordinator-selected task(s) without dependency expansion."
+            )
 
         dag_export = export_dag(cyber_plan)
+        dag_export["orchestration_enabled"] = orchestration_toggles.dag_orchestrator
+        dag_export["mode"] = (
+            "dependency_expansion_and_topological_sort"
+            if orchestration_toggles.dag_orchestrator
+            else "coordinator_selected_tasks_only"
+        )
         dag_export["mermaid"] = dag_to_mermaid(cyber_plan)
         dag_path = os.path.join(run_dir, "cyberteam_dag.json")
         with open(dag_path, "w", encoding="utf-8") as f:
@@ -262,7 +290,11 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
                 )
 
                 try:
-                    upstream_context = build_upstream_context(task, dag_state)
+                    upstream_context = (
+                        build_upstream_context(task, dag_state)
+                        if orchestration_toggles.dag_orchestrator
+                        else ""
+                    )
                     task_history = hunter.run(
                         task_log,
                         assigned_tasks=[task],
@@ -386,7 +418,11 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
         ]
         results_str = json.dumps(lean_results, indent=2, ensure_ascii=False)
         analysis_context = extractor.build_analysis_context(evidence_store)
-        ttp_graph_context = ttp_graph.build_context(results_str)
+        ttp_graph_context = (
+            ttp_graph.build_context(results_str)
+            if orchestration_toggles.ttp_relations_graph
+            else disabled_ttp_graph_context()
+        )
         ttp_graph_context_path = os.path.join(run_dir, "ttp_relations_context.json")
         with open(ttp_graph_context_path, "w", encoding="utf-8") as f:
             json.dump(ttp_graph_context, f, ensure_ascii=False, indent=2)
@@ -394,16 +430,20 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
         ttp_seed_audit_path = os.path.join(run_dir, "ttp_seed_audit.json")
         with open(ttp_seed_audit_path, "w", encoding="utf-8") as f:
             json.dump(ttp_seed_audit, f, ensure_ascii=False, indent=2)
-        print(
-            f"[MITRE] TTP graph seeded with {ttp_seed_audit['seed_count']} "
-            "verified Hunter technique candidate(s)."
-        )
-        if ttp_seed_audit["seeds"]:
+        if orchestration_toggles.ttp_relations_graph:
             print(
-                "[MITRE] Seed TTPs: "
-                + ", ".join(seed["technique_id"] for seed in ttp_seed_audit["seeds"])
+                f"[MITRE] TTP graph seeded with {ttp_seed_audit['seed_count']} "
+                "verified Hunter technique candidate(s)."
             )
-        ttp_graph_prompt_context = ttp_graph.to_prompt_context(ttp_graph_context)
+            if ttp_seed_audit["seeds"]:
+                print(
+                    "[MITRE] Seed TTPs: "
+                    + ", ".join(seed["technique_id"] for seed in ttp_seed_audit["seeds"])
+                )
+            ttp_graph_prompt_context = ttp_graph.to_prompt_context(ttp_graph_context)
+        else:
+            print("[MITRE] TTP Relations Graph disabled; Analyst receives no graph context.")
+            ttp_graph_prompt_context = None
 
         deep_analysis = analyst.analyze_incident(
             results_str,
@@ -427,32 +467,52 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
         curated_iocs_path = os.path.join(run_dir, "curated_iocs.json")
         with open(curated_iocs_path, "w", encoding="utf-8") as f:
             json.dump(curated_iocs, f, ensure_ascii=False, indent=2)
-        curated_ioc_context = ioc_curator.to_prompt_context(curated_iocs)
+        curated_ioc_context = (
+            ioc_curator.to_prompt_context(curated_iocs)
+            if orchestration_toggles.ioc_curator
+            else None
+        )
+        reporter_evidence_context = (
+            results_str if orchestration_toggles.ioc_curator else None
+        )
+        if not orchestration_toggles.ioc_curator:
+            print(
+                "[IOC] IOC Curator disabled for downstream use; Reporter receives "
+                "only the Analyst-derived analysis and scoring uses final report entities."
+            )
 
-        print("[MITRE] Retrieving ATT&CK candidates for the reconstructed behaviors...")
-        try:
-            mitre_mapper = MitreMapper()
-            mitre_mapping = mitre_mapper.map_analysis(deep_analysis)
-            mitre_mapping_text = mitre_mapper.to_json(mitre_mapping)
-        except Exception as error:
+        if orchestration_toggles.ttp_relations_graph:
+            print("[MITRE] Retrieving ATT&CK candidates for the reconstructed behaviors...")
+            try:
+                mitre_mapper = MitreMapper()
+                mitre_mapping = mitre_mapper.map_analysis(deep_analysis)
+                mitre_mapping_text = mitre_mapper.to_json(mitre_mapping)
+            except Exception as error:
+                mitre_mapping = {
+                    "queries": [],
+                    "candidates": [],
+                    "error": str(error),
+                }
+                mitre_mapping_text = json.dumps(mitre_mapping, ensure_ascii=False, indent=2)
+            analysis_with_mitre = (
+                f"{deep_analysis}\n\n"
+                "Local MITRE ATT&CK candidate retrieval for evidence-based validation:\n"
+                f"{mitre_mapping_text}"
+            )
+        else:
             mitre_mapping = {
+                "enabled": False,
                 "queries": [],
                 "candidates": [],
-                "error": str(error),
+                "reason": "TTP Relations Graph layer disabled; use Analyst reasoning only.",
             }
-            mitre_mapping_text = json.dumps(mitre_mapping, ensure_ascii=False, indent=2)
+            analysis_with_mitre = deep_analysis
         mitre_mapping_path = os.path.join(run_dir, "mitre_mapping_candidates.json")
         with open(mitre_mapping_path, "w", encoding="utf-8") as f:
             json.dump(mitre_mapping, f, ensure_ascii=False, indent=2)
-        analysis_with_mitre = (
-            f"{deep_analysis}\n\n"
-            "Local MITRE ATT&CK candidate retrieval for evidence-based validation:\n"
-            f"{mitre_mapping_text}"
-        )
-
         final_report = reporter.generate_final_report(
             analysis_with_mitre,
-            evidence_context=results_str,
+            evidence_context=reporter_evidence_context,
             entity_context=curated_ioc_context
         )
         report_str = (
@@ -468,11 +528,14 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
 
         print("\n[Evaluator] Extracting entities from final report...")
         report_entities = evaluator._extract_entities(report_str, source_type="report")
-        curated_ioc_entities = evaluator._extract_entities(
-            curated_iocs.get("indicators", {}),
-            source_type="curated_iocs",
-        )
-        post_entities = _compose_scoring_entities(report_entities, curated_ioc_entities)
+        if orchestration_toggles.ioc_curator:
+            curated_ioc_entities = evaluator._extract_entities(
+                curated_iocs.get("indicators", {}),
+                source_type="curated_iocs",
+            )
+            post_entities = _compose_scoring_entities(report_entities, curated_ioc_entities)
+        else:
+            post_entities = report_entities
 
         results_t1 = evaluator.compare_entities(pre_entities, post_entities)
 
@@ -493,7 +556,11 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
             deep_analysis,
             report_str,
             evidence_store=evidence_store,
-            graph_context=ttp_graph_context,
+            graph_context=(
+                ttp_graph_context
+                if orchestration_toggles.ttp_relations_graph
+                else None
+            ),
         )
         reasoning_eval_path = os.path.join(run_dir, "reasoning_eval_report.json")
         with open(reasoning_eval_path, "w", encoding="utf-8") as f:
@@ -510,6 +577,8 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
             "test_date": timestamp,
             "latency_seconds": round(latency, 2),
             "llm_config": llm_config,
+            "orchestration_toggles": orchestration_config,
+            "orchestration_config_path": orchestration_config_path,
             "openai_metrics": {
                 "input_tokens": total_input,
                 "output_tokens": total_output,
@@ -520,20 +589,42 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
         "layer_2_audit": result_t2,
         "reasoning_audit": reasoning_audit,
         "ioc_scoring_policy": {
-            "source": "final_report",
-            "fallback_applied": False,
+            "source": (
+                "curated_iocs"
+                if orchestration_toggles.ioc_curator
+                else "final_report"
+            ),
+            "curator_enabled": orchestration_toggles.ioc_curator,
+            "fallback_applied": not orchestration_toggles.ioc_curator,
             "curated_iocs_path": curated_iocs_path,
             "curated_ioc_counts": curated_iocs.get("counts", {}),
             "ioc_continuity_audit_path": ioc_continuity_path,
             "ioc_continuity_counts": ioc_continuity_audit.get("counts", {}),
             "policy": (
                 "IOC metrics use the curated suspicious/malicious IOC set generated after verified Hunter tasks "
-                "and Analyst synthesis. TTP metrics still use technique IDs extracted from the final report. "
-                "Task 7 is treated as a normal Hunter task, not as an authoritative scoring shortcut. "
-                "No downstream deterministic IOC fallback is appended."
+                "and Analyst synthesis; TTP metrics use final-report techniques."
+                if orchestration_toggles.ioc_curator
+                else "IOC Curator output is not passed to Reporter or Evaluator. IOC and TTP metrics are "
+                "extracted entirely from the final report generated from Analyst-derived content."
             ),
         },
         "ttp_seed_audit": ttp_seed_audit,
+        "ttp_relations_policy": {
+            "enabled": orchestration_toggles.ttp_relations_graph,
+            "fallback": (
+                None
+                if orchestration_toggles.ttp_relations_graph
+                else "analyst_reasoning_only_no_graph_or_mapper_context"
+            ),
+        },
+        "dag_policy": {
+            "enabled": orchestration_toggles.dag_orchestrator,
+            "fallback": (
+                None
+                if orchestration_toggles.dag_orchestrator
+                else "coordinator_selected_tasks_only_no_dependency_expansion"
+            ),
+        },
     }
 
     eval_file_path = os.path.join(run_dir, "eval_report.json")
@@ -575,13 +666,28 @@ def run_cyber_defense_system(log_data, scenario_name="UNTITLED"):
             print(f"      + {stage_name}: {stage_data.get('score_10', 0):.4f}/10")
     print("-" * 70)
     print("[5] IOC SCORING SOURCE")
-    print("    - IOC Source:              Curated suspicious/malicious IOC set")
+    print(
+        "    - IOC Source:              "
+        + (
+            "Curated suspicious/malicious IOC set"
+            if orchestration_toggles.ioc_curator
+            else "Final report only"
+        )
+    )
     print("    - Task 7 Mode:             Normal Hunter task, not authoritative scoring shortcut")
-    print("    - Fallback Applied:        False")
+    print(f"    - Fallback Applied:        {not orchestration_toggles.ioc_curator}")
     print(f"    - Curated IOC Counts:      {curated_iocs.get('counts', {})}")
-    print("    - Policy:                  IOC score uses curated IOCs; TTP score uses final report techniques.")
+    print(
+        "    - Policy:                  "
+        + (
+            "IOC score uses curated IOCs; TTP score uses final report techniques."
+            if orchestration_toggles.ioc_curator
+            else "IOC and TTP scores use final report entities only."
+        )
+    )
     print("-" * 70)
     print("[6] TTP RELATIONS GRAPH SEEDS")
+    print(f"    - Graph Enabled:           {orchestration_toggles.ttp_relations_graph}")
     print(f"    - Seed Count:              {ttp_seed_audit.get('seed_count', 0)}")
     seed_ids = [seed.get("technique_id", "") for seed in ttp_seed_audit.get("seeds", [])]
     print(f"    - Seed IDs:                {', '.join(seed_ids) if seed_ids else 'None'}")

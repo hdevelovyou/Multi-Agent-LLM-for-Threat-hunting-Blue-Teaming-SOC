@@ -25,10 +25,15 @@ from main import (
 from src.extractor import EvidenceExtractor
 from src.ioc_curator import IOCCurator
 from src.mitre_mapper import MitreMapper
+from src.orchestration_toggles import (
+    disabled_ttp_graph_context,
+    load_orchestration_toggles,
+)
 from src.ttp_relations_graph import TTPRelationsGraph
 from strategies.cyberteam_dag import (
     build_initial_dag_state,
     build_upstream_context,
+    coordinator_only_plan,
     dag_to_mermaid,
     expand_and_sort_plan,
     export_dag,
@@ -204,6 +209,8 @@ def run_debate_soft_tests():
 def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
     _ensure_debate_prompt_family()
     start_time = time.time()
+    orchestration_toggles = load_orchestration_toggles()
+    orchestration_config = orchestration_toggles.snapshot()
     debate_timeout = int(os.getenv("DEBATE_TIMEOUT_SECONDS", "300"))
     debate_strategy = DebateStrategy(timeout_seconds=debate_timeout, max_revision_rounds=1)
 
@@ -229,13 +236,17 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
     reasoning_evaluator = ReasoningEvaluator()
     extractor = EvidenceExtractor()
     ioc_curator = IOCCurator()
-    ttp_graph = TTPRelationsGraph()
+    ttp_graph = TTPRelationsGraph() if orchestration_toggles.ttp_relations_graph else None
     summarizer = SummarizerAgent()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     scenario_id = f"{scenario_name}_{timestamp}"
     run_dir = os.path.join("runs", scenario_id)
     os.makedirs(run_dir, exist_ok=True)
+    orchestration_config_path = os.path.join(run_dir, "orchestration_config.json")
+    with open(orchestration_config_path, "w", encoding="utf-8") as f:
+        json.dump(orchestration_config, f, ensure_ascii=False, indent=2)
+    print(f"[RQ2] Orchestration toggles: {json.dumps(orchestration_config)}")
 
     final_results = []
     debate_records = []
@@ -295,15 +306,31 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
             plan_debate_record["nonblocking_concerns_accepted"] = True
         debate_records.append(plan_debate_record)
 
-        cyber_plan = expand_and_sort_plan(coordinator_plan)
+        cyber_plan = (
+            expand_and_sort_plan(coordinator_plan)
+            if orchestration_toggles.dag_orchestrator
+            else coordinator_only_plan(coordinator_plan)
+        )
         dag_state = build_initial_dag_state(entity_context, evidence_store=evidence_store)
 
-        print(
-            f"\n[Debate Main] Coordinator selected {len(coordinator_plan)} task(s); "
-            f"DAG-expanded plan has {len(cyber_plan)} task(s)."
-        )
+        if orchestration_toggles.dag_orchestrator:
+            print(
+                f"\n[Debate Main] Coordinator selected {len(coordinator_plan)} task(s); "
+                f"DAG-expanded plan has {len(cyber_plan)} task(s)."
+            )
+        else:
+            print(
+                f"\n[Debate Main] DAG disabled; executing only {len(cyber_plan)} "
+                "Coordinator-selected task(s) without dependency expansion."
+            )
 
         dag_export = export_dag(cyber_plan)
+        dag_export["orchestration_enabled"] = orchestration_toggles.dag_orchestrator
+        dag_export["mode"] = (
+            "dependency_expansion_and_topological_sort"
+            if orchestration_toggles.dag_orchestrator
+            else "coordinator_selected_tasks_only"
+        )
         dag_export["mermaid"] = dag_to_mermaid(cyber_plan)
         dag_path = os.path.join(run_dir, "cyberteam_dag.json")
         with open(dag_path, "w", encoding="utf-8") as f:
@@ -326,7 +353,11 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
                 )
 
                 try:
-                    upstream_context = build_upstream_context(task, dag_state)
+                    upstream_context = (
+                        build_upstream_context(task, dag_state)
+                        if orchestration_toggles.dag_orchestrator
+                        else ""
+                    )
                     task_history = hunter.run(
                         task_log,
                         assigned_tasks=[task],
@@ -489,7 +520,11 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
         ]
         results_str = json.dumps(lean_results, indent=2, ensure_ascii=False)
         analysis_context = extractor.build_analysis_context(evidence_store)
-        ttp_graph_context = ttp_graph.build_context(results_str)
+        ttp_graph_context = (
+            ttp_graph.build_context(results_str)
+            if orchestration_toggles.ttp_relations_graph
+            else disabled_ttp_graph_context()
+        )
         ttp_graph_context_path = os.path.join(run_dir, "ttp_relations_context.json")
         with open(ttp_graph_context_path, "w", encoding="utf-8") as f:
             json.dump(ttp_graph_context, f, ensure_ascii=False, indent=2)
@@ -497,7 +532,21 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
         ttp_seed_audit_path = os.path.join(run_dir, "ttp_seed_audit.json")
         with open(ttp_seed_audit_path, "w", encoding="utf-8") as f:
             json.dump(ttp_seed_audit, f, ensure_ascii=False, indent=2)
-        ttp_graph_prompt_context = ttp_graph.to_prompt_context(ttp_graph_context)
+        if orchestration_toggles.ttp_relations_graph:
+            ttp_graph_prompt_context = ttp_graph.to_prompt_context(ttp_graph_context)
+            analyst_review_context = f"{results_str}\n\n{ttp_graph_prompt_context}"
+            analyst_review_focus = (
+                "Check chronology, unsupported conclusions, missing promoted TTP evidence, "
+                "IOC/entity discipline, and report-readiness."
+            )
+        else:
+            print("[MITRE] TTP Relations Graph disabled; Analyst receives no graph context.")
+            ttp_graph_prompt_context = None
+            analyst_review_context = results_str
+            analyst_review_focus = (
+                "Check chronology, unsupported conclusions, IOC/entity discipline, and report-readiness. "
+                "Evaluate TTP claims only from verified evidence and Analyst reasoning."
+            )
 
         deep_analysis = analyst.analyze_incident(
             results_str,
@@ -512,8 +561,8 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
             reviewer_role="Reporter",
             prior_role="Analyst",
             prior_output=deep_analysis,
-            context=f"{results_str}\n\n{ttp_graph_prompt_context}",
-            focus="Check chronology, unsupported conclusions, missing promoted TTP evidence, IOC/entity discipline, and report-readiness.",
+            context=analyst_review_context,
+            focus=analyst_review_focus,
         )
         analyst_debate_record = {
             "stage": "analyst_result",
@@ -537,7 +586,7 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
                 second_role="Reporter",
                 first_output=deep_analysis,
                 second_output=json.dumps(analyst_feedback, ensure_ascii=False, indent=2),
-                context=f"{results_str}\n\n{ttp_graph_prompt_context}",
+                context=analyst_review_context,
             )
             accepted = analyst_debate_record["judge_result"].get("accepted_output")
             if accepted:
@@ -564,42 +613,72 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
         curated_iocs_path = os.path.join(run_dir, "curated_iocs.json")
         with open(curated_iocs_path, "w", encoding="utf-8") as f:
             json.dump(curated_iocs, f, ensure_ascii=False, indent=2)
-        curated_ioc_context = ioc_curator.to_prompt_context(curated_iocs)
+        curated_ioc_context = (
+            ioc_curator.to_prompt_context(curated_iocs)
+            if orchestration_toggles.ioc_curator
+            else None
+        )
+        reporter_evidence_context = (
+            results_str if orchestration_toggles.ioc_curator else None
+        )
+        if not orchestration_toggles.ioc_curator:
+            print(
+                "[IOC] IOC Curator disabled for downstream use; Reporter receives "
+                "only the Analyst-derived analysis and scoring uses final report entities."
+            )
 
-        print("[MITRE] Retrieving ATT&CK candidates for the reconstructed behaviors...")
-        try:
-            mitre_mapper = MitreMapper()
-            mitre_mapping = mitre_mapper.map_analysis(deep_analysis)
-            mitre_mapping_text = mitre_mapper.to_json(mitre_mapping)
-        except Exception as error:
-            mitre_mapping = {"queries": [], "candidates": [], "error": str(error)}
-            mitre_mapping_text = json.dumps(mitre_mapping, ensure_ascii=False, indent=2)
+        if orchestration_toggles.ttp_relations_graph:
+            print("[MITRE] Retrieving ATT&CK candidates for the reconstructed behaviors...")
+            try:
+                mitre_mapper = MitreMapper()
+                mitre_mapping = mitre_mapper.map_analysis(deep_analysis)
+                mitre_mapping_text = mitre_mapper.to_json(mitre_mapping)
+            except Exception as error:
+                mitre_mapping = {"queries": [], "candidates": [], "error": str(error)}
+                mitre_mapping_text = json.dumps(mitre_mapping, ensure_ascii=False, indent=2)
+            analysis_with_mitre = (
+                f"{deep_analysis}\n\n"
+                "Local MITRE ATT&CK candidate retrieval for evidence-based validation:\n"
+                f"{mitre_mapping_text}"
+            )
+        else:
+            mitre_mapping = {
+                "enabled": False,
+                "queries": [],
+                "candidates": [],
+                "reason": "TTP Relations Graph layer disabled; use Analyst reasoning only.",
+            }
+            analysis_with_mitre = deep_analysis
         mitre_mapping_path = os.path.join(run_dir, "mitre_mapping_candidates.json")
         with open(mitre_mapping_path, "w", encoding="utf-8") as f:
             json.dump(mitre_mapping, f, ensure_ascii=False, indent=2)
 
-        analysis_with_mitre = (
-            f"{deep_analysis}\n\n"
-            "Local MITRE ATT&CK candidate retrieval for evidence-based validation:\n"
-            f"{mitre_mapping_text}"
-        )
-
         final_report = reporter.generate_final_report(
             analysis_with_mitre,
-            evidence_context=results_str,
+            evidence_context=reporter_evidence_context,
             entity_context=curated_ioc_context,
         )
         report_str = "\n".join([str(x) for x in final_report]) if isinstance(final_report, list) else str(final_report)
 
         report_debate_started = time.time()
+        report_review_context = (
+            f"{deep_analysis}\n\n{curated_ioc_context}"
+            if orchestration_toggles.ioc_curator
+            else deep_analysis
+        )
+        report_review_focus = (
+            "Check final report fidelity, unsupported new claims, missing promoted TTPs, and IOC table correctness."
+            if orchestration_toggles.ttp_relations_graph
+            else "Check final report fidelity, unsupported new claims, evidence-backed Analyst TTPs, and IOC table correctness."
+        )
         report_feedback = _run_review(
             feedback_agent,
             stage="final_report",
             reviewer_role="Report Critic",
             prior_role="Reporter",
             prior_output=report_str,
-            context=f"{deep_analysis}\n\n{curated_ioc_context}",
-            focus="Check final report fidelity, unsupported new claims, missing promoted TTPs, and IOC table correctness.",
+            context=report_review_context,
+            focus=report_review_focus,
         )
         report_debate_record = {
             "stage": "final_report",
@@ -615,7 +694,7 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
             )
             final_report = reporter.generate_final_report(
                 revised_analysis,
-                evidence_context=results_str,
+                evidence_context=reporter_evidence_context,
                 entity_context=curated_ioc_context,
             )
             report_str = "\n".join([str(x) for x in final_report]) if isinstance(final_report, list) else str(final_report)
@@ -628,7 +707,7 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
                 second_role="Report Critic",
                 first_output=report_str,
                 second_output=json.dumps(report_feedback, ensure_ascii=False, indent=2),
-                context=f"{deep_analysis}\n\n{curated_ioc_context}",
+                context=report_review_context,
             )
             accepted = report_debate_record["judge_result"].get("accepted_output")
             if accepted:
@@ -649,11 +728,14 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
 
         print("\n[Evaluator] Extracting entities from final report...")
         report_entities = evaluator._extract_entities(report_str, source_type="report")
-        curated_ioc_entities = evaluator._extract_entities(
-            curated_iocs.get("indicators", {}),
-            source_type="curated_iocs",
-        )
-        post_entities = _compose_scoring_entities(report_entities, curated_ioc_entities)
+        if orchestration_toggles.ioc_curator:
+            curated_ioc_entities = evaluator._extract_entities(
+                curated_iocs.get("indicators", {}),
+                source_type="curated_iocs",
+            )
+            post_entities = _compose_scoring_entities(report_entities, curated_ioc_entities)
+        else:
+            post_entities = report_entities
 
         results_t1 = evaluator.compare_entities(pre_entities, post_entities)
 
@@ -674,7 +756,11 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
             deep_analysis,
             report_str,
             evidence_store=evidence_store,
-            graph_context=ttp_graph_context,
+            graph_context=(
+                ttp_graph_context
+                if orchestration_toggles.ttp_relations_graph
+                else None
+            ),
         )
         reasoning_eval_path = os.path.join(run_dir, "reasoning_eval_report.json")
         with open(reasoning_eval_path, "w", encoding="utf-8") as f:
@@ -692,6 +778,8 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
             "test_date": timestamp,
             "latency_seconds": round(latency, 2),
             "llm_config": llm_config,
+            "orchestration_toggles": orchestration_config,
+            "orchestration_config_path": orchestration_config_path,
             "openai_metrics": {
                 "input_tokens": total_input,
                 "output_tokens": total_output,
@@ -703,19 +791,42 @@ def run_debate_cyber_defense_system(log_data, scenario_name="UNTITLED_DEBATE"):
         "layer_2_audit": result_t2,
         "reasoning_audit": reasoning_audit,
         "ioc_scoring_policy": {
-            "source": "curated_iocs",
-            "fallback_applied": False,
+            "source": (
+                "curated_iocs"
+                if orchestration_toggles.ioc_curator
+                else "final_report"
+            ),
+            "curator_enabled": orchestration_toggles.ioc_curator,
+            "fallback_applied": not orchestration_toggles.ioc_curator,
             "curated_iocs_path": curated_iocs_path,
             "curated_ioc_counts": curated_iocs.get("counts", {}),
             "ioc_continuity_audit_path": ioc_continuity_path,
             "ioc_continuity_counts": ioc_continuity_audit.get("counts", {}),
             "policy": (
-                "Debate strategy reorders agent communication only. IOC metrics use the same curated "
-                "suspicious/malicious IOC set as hierarchical; TTP metrics use final report techniques. "
-                "No deterministic scoring fallback is appended."
+                "Debate strategy uses the same curated suspicious/malicious IOC set as hierarchical; "
+                "TTP metrics use final-report techniques."
+                if orchestration_toggles.ioc_curator
+                else "IOC Curator output is not passed to Reporter or Evaluator. IOC and TTP metrics are "
+                "extracted entirely from the final report generated from Analyst-derived content."
             ),
         },
         "ttp_seed_audit": ttp_seed_audit,
+        "ttp_relations_policy": {
+            "enabled": orchestration_toggles.ttp_relations_graph,
+            "fallback": (
+                None
+                if orchestration_toggles.ttp_relations_graph
+                else "analyst_reasoning_only_no_graph_or_mapper_context"
+            ),
+        },
+        "dag_policy": {
+            "enabled": orchestration_toggles.dag_orchestrator,
+            "fallback": (
+                None
+                if orchestration_toggles.dag_orchestrator
+                else "coordinator_selected_tasks_only_no_dependency_expansion"
+            ),
+        },
         "debate_audit_path": debate_path,
     }
 

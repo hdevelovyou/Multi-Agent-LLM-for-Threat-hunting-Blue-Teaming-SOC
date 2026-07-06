@@ -14,6 +14,20 @@ _DEFAULT_MODELS = {
     "google": "models/gemma-4-26b-a4b-it",
 }
 
+# Main-experiment heterogeneous allocation. Environment variables still take
+# precedence, so AGENT_LLM_PROVIDER/AGENT_MODEL can switch all components back
+# to a homogeneous model for RQ1 without changing source code.
+_DEFAULT_PROVIDERS = {
+    "coordinator": "google",
+    "hunter": "openai",
+    "verifier": "openai",
+    "analyst": "google",
+    "reporter": "google",
+    "tools": "openai",
+    "debate_feedback": "openai",
+    "debate_judge": "openai",
+}
+
 
 @dataclass(frozen=True)
 class AgentLLMSettings:
@@ -25,10 +39,11 @@ class AgentLLMSettings:
 def resolve_agent_llm_settings(agent_name):
     """Resolve global agent defaults with optional per-agent overrides."""
     env_prefix = agent_name.strip().upper().replace("-", "_").replace(" ", "_")
+    default_provider = _DEFAULT_PROVIDERS.get(env_prefix.lower(), "openai")
     provider = (
         os.getenv(f"{env_prefix}_LLM_PROVIDER")
         or os.getenv("AGENT_LLM_PROVIDER")
-        or "deepseek"
+        or default_provider
     ).strip().lower()
 
     if provider not in _DEFAULT_MODELS:

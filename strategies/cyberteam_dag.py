@@ -39,6 +39,27 @@ def expand_and_sort_plan(selected_plan):
     return expanded_plan
 
 
+def coordinator_only_plan(selected_plan):
+    """Use only Coordinator-selected tasks without DAG expansion or edges."""
+    plan = []
+    seen_task_ids = set()
+
+    for selected in selected_plan:
+        task_id = selected.get("id")
+        if task_id not in TASK_BY_ID or task_id in seen_task_ids:
+            continue
+
+        task = clone_task(task_id)
+        task["catalog_depends_on"] = list(task.get("depends_on", []))
+        task["depends_on"] = []
+        task["selected_by_coordinator"] = True
+        task["coordinator_reason"] = selected.get("coordinator_reason", "")
+        plan.append(task)
+        seen_task_ids.add(task_id)
+
+    return plan
+
+
 def topological_sort(task_ids):
     task_ids = set(task_ids)
     indegree = {task_id: 0 for task_id in task_ids}
